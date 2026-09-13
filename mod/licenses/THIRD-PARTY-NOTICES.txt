@@ -1,0 +1,386 @@
+====================================================================
+ 《不/存在的你，和我》无障碍补丁 —— 第三方组件声明
+ Third-Party Notices
+====================================================================
+
+【先说清楚】《不/存在的你，和我》（The NOexistenceN of you AND me）
+由 0x0Real Studio 开发、Nino Games 发行（Steam AppID 2873080）。
+游戏本身与本补丁无关，其著作权属于上述两家，**不在下面这份清单里**——
+本补丁不分发任何游戏文件或游戏资源。
+
+下面列的是 BepInEx 运行时的那些第三方组件。
+
+本发布包（NoExistenceA11y-0.1.0.0.zip）里除了我们自己的 NoExistenceA11y.dll，
+其余全是第三方组件。本文件说明它们分别是什么、以什么许可证分发、
+必须保留哪些版权行。
+
+为什么需要这份文件：**BepInEx 官方发布的 zip 里一个许可证文件都不带**
+（上游打包脚本只复制 DLL、Doorstop、dobby、dotnet\、配置和 changelog，
+没有任何复制许可证的逻辑）。所以随包分发的人得自己补上。
+
+本目录下的版本号除了凭记忆，还另做了一次核对 ——
+**直接读随包分发的每个 DLL 的 Win32 版本资源**：
+
+  (Get-Item <文件>).VersionInfo.ProductVersion / .LegalCopyright
+
+这么做是有原因的，见下面「一条踩过的坑」。
+
+
+====================================================================
+ 一、重要声明（LGPL 部分）
+====================================================================
+
+本发布包使用了下列 **LGPL** 库：
+
+  BepInEx 6.0.0-be.788        LGPL-2.1   BepInEx.Core / .Preloader.Core /
+                                         .Unity.IL2CPP / .Unity.Common
+  UnityDoorstop 4.5.0         LGPL-2.1   winhttp.dll
+  NVDA Controller Client      LGPL-2.1   nvdaControllerClient.dll
+  Il2CppInterop 1.5.3         LGPL-3.0   Il2CppInterop.Runtime / .Common /
+                                         .Generator / .HarmonySupport
+
+**这些库受各自的许可证保护，不是公有领域，也不在本补丁的许可范围内。**
+各许可证全文就在本目录里。
+
+它们都是以**未修改的独立 DLL** 形式随包分发的：程序运行时按名字加载这些 DLL，
+你可以自行用一个接口兼容的修改版替换掉它们中的任何一个。
+按 LGPL-2.1 第 6(b) 条 / LGPL-3.0 第 4(d)(1) 条，
+这种做法不要求我们随包提供这些库的源码。
+
+**唯一的例外是 Il2CppInterop.Runtime.dll，它是被修改过的库** ——
+LGPL-3.0 对修改过的库有额外要求，见下面第三节。
+
+
+====================================================================
+ 二、BepInEx 6 是 LGPL-2.1，不是 MIT（容易搞反）
+====================================================================
+
+  BepInEx 5     MIT          Copyright (c) 2018 Bepis
+  BepInEx 6     LGPL-2.1     Copyright (C) 2020 BepInEx Team
+
+同一个 GitHub 仓库 BepInEx/BepInEx：`master` 分支是 v6（LGPL），
+`v5-lts` 分支是 v5（MIT）。
+
+「BepInEx 是 LGPL-2.1」这个印象通常来自 UnityDoorstop ——
+那个确实是 LGPL-2.1，而它总和 BepInEx 一起出现，于是很容易张冠李戴。
+但反过来说「BepInEx 5 是 LGPL」也是错的，方向恰好相反。
+
+（BepInEx 自己的 LICENSE 文件里写的授权是"2.1 版或任何更新版本"，
+而仓库的 Directory.Build.props 里写的是 LGPL-2.1-only。上游自己不一致，
+本文件按更宽的 or-later 理解，这不会减少接收者的权利。）
+
+
+====================================================================
+ 三、被修改过的库：Il2CppInterop.Runtime.dll（LGPL-3.0，★ 请看）
+====================================================================
+
+【声明】Il2CppInterop.Runtime.dll 对应的库**已被修改**。
+
+  上游仓库  https://github.com/BepInEx/Il2CppInterop
+  基线      v1.5.3（发行提交 dbda1cb353b0f4253345dc45136d170b9e50a5a0）
+  所用提交  f0634efa9824a0c92ceab3dba9e6a21c249683a7
+  PR        https://github.com/BepInEx/Il2CppInterop/pull/277
+  作者      Alec Hall <signshop.alec@gmail.com>
+  日期      2026-08-06
+  说明      Add Class::Init signature for Unity 2022.3 x64
+
+为什么：本作是 Unity 2022.3.62f2c1。v1.5.3 发行版里没有 Unity 2022.3 x64 的
+Class::Init 签名匹配项，注入会失败。该 PR 就是补这条签名。
+
+改动范围：**相对 v1.5.3 只有 1 个文件、新增 7 行**
+（Il2CppInterop.Runtime/Injection/InjectorHelpers.cs）。
+完整 diff、提交信息与复现步骤都在同目录的 il2cppinterop-pr277.patch 里。
+
+**我们没有对 Il2CppInterop 做过任何自己的源码改动。** 上面那个修改是上游自己
+提交的公开代码，按提交号可从公开仓库取到，因此 LGPL-3.0 关于「让接收者能拿到
+对应源码」的要求已经满足 —— 源码位置就是上面那两行。
+
+怎么自己核实「随包的 DLL 确实是这个提交编出来的」——
+读 DLL 自己的 ProductVersion 即可，四个程序集里只有 Runtime 那个不一样：
+
+  Il2CppInterop.Common.dll          1.5.3+dbda1cb3...   ← v1.5.3 发行提交
+  Il2CppInterop.Generator.dll       1.5.3+dbda1cb3...
+  Il2CppInterop.HarmonySupport.dll  1.5.3+dbda1cb3...
+  Il2CppInterop.Runtime.dll         1.5.3+f0634ef...    ← 就是上面那个 PR 提交
+
+LGPL-3.0 的许可证全文（其中已包含 GPL-3.0 全文）：
+  LGPL-3.0-Il2CppInterop.txt
+
+Il2CppInterop 的 LICENSE 文件是裸的 FSF 模板，**里面没有项目版权行**，
+四个 DLL 的 LegalCopyright 也是空的。因此这里无从引用一行"官方版权行"，
+只能署名到包作者：**knah、BepInEx 及 Il2CppInterop 贡献者**。
+
+LGPL-3.0 第 4 条另外要求：分发时给出显著声明、附上 GPL 与本许可证的副本、
+并在程序运行时显示版权声明的情况下包含该库的版权声明。
+第一、二条由本文件与本目录的许可证文本满足；第三条不适用，
+因为本补丁在运行时**不显示任何版权声明**（它是朗读补丁，没有"关于"界面）。
+
+
+====================================================================
+ 四、组件清单
+====================================================================
+
+「二进制内」= DLL 版本资源里的 LegalCopyright。
+「LICENSE 文件」= 上游仓库许可证文件里的版权行。
+两者有时不一致，所以**两边都列**，这样从哪个角度审计都覆盖得到。
+
+--- BepInEx 6.0.0-be.788 — LGPL-2.1 ---
+  文件    BepInEx.Core.dll / BepInEx.Preloader.Core.dll /
+          BepInEx.Unity.IL2CPP.dll / BepInEx.Unity.Common.dll
+  版本    6.0.0-be.788+5b766a3b7f6c164d4798924a93f3acf4db769d06
+  二进制内  Copyright © 2022 BepInEx Team
+  LICENSE  BepInEx - Unity
+           Copyright (C) 2020 BepInEx Team
+  许可证   LGPL-2.1-BepInEx.txt
+  上游     https://github.com/BepInEx/BepInEx
+
+--- Il2CppInterop 1.5.3（+ PR #277）— LGPL-3.0 ---
+  文件    Il2CppInterop.Runtime.dll / .Common.dll / .Generator.dll /
+          .HarmonySupport.dll
+  版本    1.5.3+f0634efa...（Runtime）；1.5.3+dbda1cb3...（其余三个）
+  版权行  **无**（LICENSE 是裸 FSF 模板；DLL 的 LegalCopyright 为空）
+  署名    knah、BepInEx 及 Il2CppInterop 贡献者
+  许可证   LGPL-3.0-Il2CppInterop.txt（内含 GPL-3.0 全文）
+  上游     https://github.com/BepInEx/Il2CppInterop
+  ★ 修改说明见上面第三节
+
+--- HarmonyX 2.10.2 — MIT（★ 需要两行）---
+  文件    0Harmony.dll
+  版本    2.10.2
+  二进制内  Copyright © BepInEx 2022
+  LICENSE  Copyright (c) 2020 BepInEx
+           Copyright (c) 2017 Andreas Pardeike      ← 少这行就不完整
+  许可证  MIT-HarmonyX.txt + MIT-HarmonyX-AndreasPardeike.txt
+  上游     https://github.com/BepInEx/HarmonyX
+  说明    仓库里有两个许可证文件：LICENSE 是 BepInEx 的，
+          LICENSE.Harmony 是 Harmony 原作者 Andreas Pardeike 的。
+          只放前者是漏的。
+
+--- Mono.Cecil 0.11.4 — MIT（★ 需要两行）---
+  文件    Mono.Cecil.dll / Mono.Cecil.Mdb.dll / Mono.Cecil.Pdb.dll /
+          Mono.Cecil.Rocks.dll
+  版本    0.11.4.0
+  二进制内  Copyright © 2008 - 2018 Jb Evain
+  LICENSE  Copyright (c) 2008 - 2015 Jb Evain
+           Copyright (c) 2008 - 2011 Novell, Inc.    ← 少这行就不完整
+  许可证  MIT-Mono.Cecil.txt
+  上游     https://github.com/jbevain/cecil
+
+--- MonoMod — MIT ---
+  文件    MonoMod.RuntimeDetour.dll   22.7.31.1   Copyright 2022 0x0ade
+          MonoMod.Utils.dll           22.7.31.1   Copyright 2022 0x0ade
+          MonoMod.ILHelpers.dll       1.1.0       （无版本资源）
+          MonoMod.Backports.dll       1.1.2       Copyright 2024 0x0ade, DaNike
+  许可证  MIT-MonoMod.txt
+  上游     https://github.com/MonoMod/MonoMod
+  说明    仓库 LICENSE 里的写法是 "Copyright (c) 2015 - 2020 0x0ade"，
+          与 DLL 内嵌的年份不同；两者都列在这里。
+
+--- Cpp2IL 家族 2022.1.0-development.1452 — MIT ---
+  文件    Cpp2IL.Core.dll       Copyright © Samboy063 2019-2023
+          LibCpp2IL.dll         Copyright © Samboy063 2019-2023
+          StableNameDotNet.dll  Copyright © Samboy063 2022-2023
+          WasmDisassembler.dll  （无版本资源）
+  许可证  MIT-Cpp2IL.txt
+  上游     https://github.com/SamboyCoding/Cpp2IL
+          （LICENSE 内版权行为 Copyright (c) 2020 Sam Byass）
+  ★ 另见下面第五节的致谢：Cpp2IL 内含有来自 Il2CppInspector 的代码片段。
+
+--- AsmResolver 6.0.0-beta.5 — MIT ---
+  文件    AsmResolver.dll / AsmResolver.DotNet.dll /
+          AsmResolver.PE.dll / AsmResolver.PE.File.dll
+  版本    6.0.0-beta.5+124e161a...
+  二进制内  Copyright © Washi 2016-2025
+  许可证  MIT-AsmResolver.md
+  上游     https://github.com/Washi1337/AsmResolver
+
+--- AssetRipper.CIL 1.2.2 — MIT ---
+  文件    AssetRipper.CIL.dll
+  版本    1.2.2+06216e69...
+  二进制内  Copyright (c) 2025 ds5678
+  LICENSE  Copyright (c) 2024 ds5678
+  许可证  MIT-AssetRipper.CIL.txt
+  上游     https://github.com/AssetRipper/AssetRipper.CIL
+  说明    这是**独立的 MIT 库**，与 AssetRipper 主程序（GPL-3.0）不是一回事，
+          随包分发的也不是主程序的文件。GPL-3.0 与本包无关。
+
+--- AssetRipper.Primitives 3.2.0 — MIT（★ 需要两行）---
+  文件    AssetRipper.Primitives.dll
+  版本    3.2.0+d759b3db...
+  二进制内  Copyright (c) 2022-2025 ds5678
+  LICENSE  Copyright (c) 2022 ds5678
+           Copyright (c) 2020 mafaca                  ← uTinyRipper，少这行就不完整
+  许可证  MIT-AssetRipper.Primitives.md + MIT-uTinyRipper.md
+  上游     https://github.com/AssetRipper/AssetRipper.Primitives
+
+--- Disarm 2022.1.0-master.99 — MIT ---
+  文件    Disarm.dll
+  版本    2022.1.0-master.99+8574010...
+  二进制内  Copyright © Samboy063 2022
+  LICENSE  Copyright (c) 2025 Sam Byass
+  许可证  MIT-Disarm.txt
+  上游     https://github.com/SamboyCoding/Disarm
+  说明    仓库 LICENSE 的年份（2025）比包版本前缀（2022）新，两行都保留。
+
+--- Iced 1.21.0 — MIT ---
+  文件    Iced.dll
+  版本    1.21.0+601c4057...
+  二进制内  Copyright (C) 2018-present iced project and contributors
+  许可证  MIT-Iced.txt
+  上游     https://github.com/icedland/iced
+  说明    Iced 在 0.9.0–1.0.2（2018 年）那段时期曾是 LGPL-3.0-or-later，
+          从 1.1.0 起改为 MIT。本包用的是 1.21.0，**是 MIT**。
+
+--- Capstone 的 .NET 封装 2.3.2 — MIT ---
+  文件    Gee.External.Capstone.dll
+  版本    2.3.2+b90e380c...
+  版权行  Copyright (c) Ahmed Garhy
+  许可证  MIT-Capstone.NET.txt
+  上游     https://github.com/ds5678/Capstone.NET
+          （AssetRipper 维护的分支；原名 Gee.External.Capstone）
+  说明    本包**只带这个托管封装，不带 Capstone 原生库**（见第六节），
+          所以不涉及 Capstone 本身的 BSD-3-Clause 义务。
+
+--- SemanticVersioning 2.0.2 — MIT ---
+  文件    SemanticVersioning.dll
+  版本    2.0.2
+  二进制内  Copyright 2016 Adam Reeve
+  LICENSE  Copyright (c) Adam Reeve（无年份）
+  许可证  MIT-SemanticVersioning.txt
+  上游     https://github.com/adamreeve/semver.net
+
+--- dobby 1.0.5 — Apache-2.0 ---
+  文件    dobby.dll（原生，无版本资源）
+  许可证  Apache-2.0-Dobby.txt
+  上游     https://github.com/BepInEx/Dobby（jmpews/Dobby 的分支）
+  说明    Apache-2.0 第 4(d) 条要求：若上游提供 NOTICE 文件，分发时必须一并
+          转达其内容。**上游仓库没有 NOTICE 文件**（BepInEx/Dobby 与
+          jmpews/Dobby 都没有），因此该条不触发。
+          其 LICENSE 是未填写的 Apache 模板，没有具体版权行可保留。
+
+--- UnityDoorstop 4.5.0 — LGPL-2.1 ---
+  文件    winhttp.dll、doorstop_config.ini、.doorstop_version
+  版本    4.5.0.0
+  版权行  **无**（LICENSE 是裸 FSF 模板）
+  许可证  LGPL-2.1-UnityDoorstop.txt
+  上游     https://github.com/NeighTools/UnityDoorstop
+  说明    注意 Doorstop 3 是 CC0，**从 Doorstop 4 起才改为 LGPLv2.1**，
+          不能沿用旧判断。本包用的是 4.5.0。
+
+--- NVDA Controller Client — API 2.0 — LGPL-2.1 ---
+  文件    nvdaControllerClient.dll（x64 原生，无版本资源）
+  版权行  **无**（官方 license.txt 即 FSF 原文）
+  许可证  LGPL-2.1-NVDA-ControllerClient.txt
+  上游     https://github.com/nvaccess/nvda
+          （extras/controllerClient/）
+  版本判定  读 DLL 的导出表得到：nvdaController_testIfRunning / speakText /
+          brailleMessage / cancelSpeech / speakSsml / getProcessId /
+          setOnSsmlMarkReachedCallback。
+          有 getProcessId、没有 isSpeaking → **API 2.0**（NVDA 2024.1+）。
+          API 3.0 会多出 nvdaController_isSpeaking，API 1.0 则只有前四个。
+          许可证在三个 API 版本之间没有变化。
+
+--- .NET 运行时 6.0.7（mini-coreclr）— MIT ---
+  文件    dotnet\ 下 187 个文件，含 coreclr.dll、
+          System.Private.CoreLib.dll 等
+  版本    6.0.722.32202
+  二进制内  © Microsoft Corporation. All rights reserved.
+  LICENSE  Copyright (c) .NET Foundation and Contributors
+           All rights reserved.
+  许可证  MIT-dotnet-runtime.txt
+  上游     https://github.com/BepInEx/dotnet-runtime
+  说明    **这不是微软发行的 .NET 桌面运行时**，而是 BepInEx 自己维护的
+          精简分支（mini-coreclr，取自 dotnet/runtime）。
+          所以微软桌面运行时的 EULA 不适用。
+
+--- 本补丁自身 ---
+  文件    NoExistenceA11y.dll、安装说明.md、常见问题.md
+  版本    0.1.0.0
+  许可    见仓库根目录的 README.md 与 CHANGELOG.md
+
+
+====================================================================
+ 五、致谢（不随包分发，但代码在里面）
+====================================================================
+
+Cpp2IL 里含有来自下面两个项目的代码片段，因此 Cpp2IL 的 DLL 也间接包含它们：
+
+  Il2CppInspector — djkaty/Il2CppInspector — **AGPL-3.0**
+    Cpp2IL 的 README 原文说明其代码是 "taken with permission from djKaty"
+    （经权利人许可取用）。上游已就此作出安排，Cpp2IL 整体按 MIT 分发。
+    这里如实署名，是因为这个来源值得写清楚。
+    Il2CppInspector 的 LICENSE 是裸的 FSF AGPL-3.0 文本，无项目版权行。
+
+  Il2CppDumper — Perfare/Il2CppDumper — MIT — Copyright (c) 2016 Perfare
+    Cpp2IL 的 README 说明 LibCpp2IL 主要基于该项目。
+
+两者都**没有**作为独立文件随本包分发。
+
+
+====================================================================
+ 六、本包明确不含的东西
+====================================================================
+
+- **不含游戏本体、不含任何游戏资源。** 补丁只在运行时读取游戏信息。
+- **不含 BepInEx\interop\ 与 unity-libs\** —— 那是首次启动时由 BepInEx
+  按本机游戏现生成的适配层，从游戏程序集导出，不该由我们分发。
+- **不含 Capstone 原生库。** NuGet 上的 Gee.External.Capstone 包**确实内嵌**
+  原生 capstone.dll（各平台一共好几 MB），但本包只带了那个 295,936 字节的
+  托管封装，整个发布目录里搜不到任何原生 capstone 文件。
+  因此 **Capstone 的 BSD-3-Clause 声明义务不触发**。
+  （若将来随包带了原生库，则需要补 BSD-3-Clause 的
+   "Copyright (c) 2013, COSEINC."，并注意它同时含 NCSA/LLVM 许可的部分。）
+
+
+====================================================================
+ 七、一条踩过的坑
+====================================================================
+
+写这份文件时差点把 AsmResolver 的版权年份写错。
+
+一开始是从"be.788 大概是 2023/2024 年的构建"这个想当然的前提出发，
+据此推断用的是 AsmResolver 5.5.x，版权行该写 2016-2021。
+但**没有把它当结论，而是去读了实际随包的 DLL**：
+
+  AsmResolver.dll   ProductVersion 6.0.0-beta.5+124e161a...
+                    LegalCopyright "Copyright © Washi 2016-2025"
+
+与上游 v6.0.0-beta.5 标签下的 LICENSE.md 逐字一致。
+差一年看起来是小事，但版权行写错就是写错。
+
+同理，BepInEx 的构建身份也不是推的：它的 ProductVersion 里直接带着
+`be.788+5b766a3b7f6c164d4798924a93f3acf4db769d06`。
+
+**结论：版权行与版本号，我们这一版除了凭记忆，每个都另外从产物本身核对了一遍。**
+
+
+====================================================================
+ 八、本目录文件一览
+====================================================================
+
+  THIRD-PARTY-NOTICES.txt              本文件
+  il2cppinterop-pr277.patch            Il2CppInterop 的修改（LGPL-3.0 要求）
+  LGPL-2.1-BepInEx.txt                 BepInEx 6 的 LICENSE（含 NOTICE 块）
+  LGPL-3.0-Il2CppInterop.txt           Il2CppInterop 的 LICENSE（内含 GPL-3.0）
+  LGPL-2.1-UnityDoorstop.txt           UnityDoorstop 4.5.0
+  LGPL-2.1-NVDA-ControllerClient.txt   NVDA Controller Client
+  MIT-HarmonyX.txt                     HarmonyX（BepInEx 部分）
+  MIT-HarmonyX-AndreasPardeike.txt     HarmonyX（Harmony 原作者部分）
+  MIT-Mono.Cecil.txt                   Mono.Cecil
+  MIT-MonoMod.txt                      MonoMod 家族
+  MIT-Cpp2IL.txt                       Cpp2IL 家族
+  MIT-AsmResolver.md                   AsmResolver 6.0.0-beta.5
+  MIT-AssetRipper.CIL.txt              AssetRipper.CIL
+  MIT-AssetRipper.Primitives.md        AssetRipper.Primitives
+  MIT-uTinyRipper.md                   uTinyRipper（Primitives 的第二条版权行）
+  MIT-Disarm.txt                       Disarm
+  MIT-Iced.txt                         Iced
+  MIT-Capstone.NET.txt                 Capstone 的 .NET 封装
+  BSD-3-Clause-Capstone.txt            Capstone 原生库（本包未带，预防性附上；
+                                       见第六节。若你自行补了原生 capstone.dll，
+                                       这一份就是它需要的声明）
+  MIT-SemanticVersioning.txt           SemanticVersioning
+  Apache-2.0-Dobby.txt                 dobby
+  MIT-dotnet-runtime.txt               BepInEx/dotnet-runtime（mini-coreclr）
+
+许可证文本都是从上游按对应版本标签原样下载的，**没有改写**。

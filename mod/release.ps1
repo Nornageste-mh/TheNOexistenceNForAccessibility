@@ -4,7 +4,7 @@
 #  发布包 = BepInEx 6.0.0-be.788 官方包
 #         + 打过补丁的 Il2CppInterop.Runtime.dll（上游 PR #277）
 #         + 本补丁插件
-#         + 两份文档
+#         + 两份文档 + licenses\（第三方许可证与声明）
 #
 #  不含 BepInEx/interop 与 unity-libs —— 那是首次运行时按本机游戏
 #  自动生成的，不该由我们分发。
@@ -56,6 +56,18 @@ foreach ($d in $docs) {
 }
 if ($docs.Count -eq 0) { Write-Host "    !! no docs found in package/" -ForegroundColor Red; exit 1 }
 
+Write-Host "    copying licenses ..."
+$LIC = Join-Path $MOD 'licenses'
+if (-not (Test-Path $LIC)) { Write-Host "    !! licenses/ not found" -ForegroundColor Red; exit 1 }
+$licDst = Join-Path $REL 'licenses'
+New-Item -ItemType Directory -Force -Path $licDst | Out-Null
+Copy-Item (Join-Path $LIC '*') $licDst -Recurse -Force
+$licCount = (Get-ChildItem $licDst -File).Count
+Write-Host ("      " + $licCount + " files -> licenses\")
+foreach ($must in @('THIRD-PARTY-NOTICES.txt', 'il2cppinterop-pr277.patch')) {
+  if (-not (Test-Path (Join-Path $licDst $must))) { Write-Host ("    !! licenses\" + $must + " missing") -ForegroundColor Red; exit 1 }
+}
+
 Write-Host ""
 Write-Host "=== 3. sanity checks ==="
 $need = @(
@@ -77,6 +89,8 @@ foreach ($d in $docs) {
   if (Test-Path (Join-Path $REL $d.Name)) { Write-Host ("    [ok]   " + $d.Name) }
   else { Write-Host ("    [MISS] " + $d.Name) -ForegroundColor Red; $ok = $false }
 }
+if (Test-Path (Join-Path $REL 'licenses')) { Write-Host ("    [ok]   licenses\ (" + $licCount + " files)") }
+else { Write-Host "    [MISS] licenses\" -ForegroundColor Red; $ok = $false }
 if (Test-Path (Join-Path $REL 'BepInEx\interop')) { Write-Host "    [warn] interop should not be shipped" -ForegroundColor Yellow }
 if (Test-Path (Join-Path $REL 'BepInEx\config\noexistence.a11y.cfg')) { Write-Host "    [warn] shipped config should not exist" -ForegroundColor Yellow }
 if (-not $ok) { exit 1 }

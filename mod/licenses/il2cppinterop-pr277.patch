@@ -1,0 +1,84 @@
+Il2CppInterop 1.5.3 之上的一处改动 —— 完整内容就是这个文件
+================================================================
+
+发布包里的 BepInEx\core\Il2CppInterop.Runtime.dll **不是**上游 v1.5.3 的发行版，
+而是把上游自己的一个未合并 PR 一起编出来的版本。
+
+上游仓库   https://github.com/BepInEx/Il2CppInterop
+基线标签   v1.5.3
+所用提交   f0634efa9824a0c92ceab3dba9e6a21c249683a7
+PR         https://github.com/BepInEx/Il2CppInterop/pull/277
+作者       Alec Hall <signshop.alec@gmail.com>
+日期       2026-08-06
+提交说明   Add Class::Init signature for Unity 2022.3 x64
+
+为什么必须带上它
+----------------
+本作是 Unity 2022.3.62f2c1。v1.5.3 发行版里没有 2022.3 x64 的 Class::Init
+签名匹配项，注入时会失败。该 PR 就是补这条签名，除此之外没有任何改动 ——
+相对 v1.5.3 全文只有 1 个文件、新增 7 行。
+
+改动清单（相对 v1.5.3）
+----------------------
+  Il2CppInterop.Runtime/Injection/InjectorHelpers.cs   +7 行
+
+怎么证明随包的那个 DLL 确实是这个提交编出来的
+------------------------------------------------
+不用信上面的话，读 DLL 自己的 ProductVersion 就能看出来。
+发布包里四个 Il2CppInterop 程序集的版本资源：
+
+  Il2CppInterop.Common.dll       1.5.3+dbda1cb353b0f4253345dc45136d170b9e50a5a0
+  Il2CppInterop.Generator.dll    1.5.3+dbda1cb353b0f4253345dc45136d170b9e50a5a0
+  Il2CppInterop.HarmonySupport.dll 1.5.3+dbda1cb353b0f4253345dc45136d170b9e50a5a0
+  Il2CppInterop.Runtime.dll      1.5.3+f0634efa9824a0c92ceab3dba9e6a21c249683a7  ← 只有它是这个
+
+`dbda1cb3` 正是 v1.5.3 的发行提交；`f0634ef` 就是本文件讲的那个 PR 提交。
+三个没动过的程序和动过的那个带着不同的构建提交，这就是"被修改过"的客观证据。
+
+一条命令复核：
+
+  (Get-Item '<游戏目录>\BepInEx\core\Il2CppInterop.Runtime.dll').VersionInfo.ProductVersion
+
+本地构建环境的唯一差异
+----------------------
+构建时把仓库根的 global.json 从上游的 SDK 锁定改成了
+  { "sdk": { "version": "8.0.0", "rollForward": "latestMajor" } }
+这只是为了用本机装的 .NET SDK 编译，**不进入任何产物**。
+
+复现
+----
+  git clone https://github.com/BepInEx/Il2CppInterop.git
+  cd Il2CppInterop
+  git checkout f0634ef
+  dotnet build Il2CppInterop.Runtime -c Release
+
+（改 global.json 视本机 SDK 而定，见上。）
+
+许可
+----
+Il2CppInterop 以 LGPL-3.0 授权，见同目录 LGPL-3.0-Il2CppInterop.txt。
+LGPL-3.0 要求：分发被修改过的库时，必须显著声明该库已被修改（含修改日期），
+并且让接收者能拿到对应的源码。本文件连同上面那个公开的上游提交
+共同满足这两条：修改是上游自己提交的、源码在公开仓库里按提交号可取。
+我们没有对 Il2CppInterop 做过任何自己的源码改动。
+
+下面是从 v1.5.3 到 f0634ef 的完整 diff（`git diff v1.5.3..f0634ef`，一字未改）。
+
+diff --git a/Il2CppInterop.Runtime/Injection/InjectorHelpers.cs b/Il2CppInterop.Runtime/Injection/InjectorHelpers.cs
+index 9418c06..7144902 100644
+--- a/Il2CppInterop.Runtime/Injection/InjectorHelpers.cs
++++ b/Il2CppInterop.Runtime/Injection/InjectorHelpers.cs
+@@ -148,6 +148,13 @@ namespace Il2CppInterop.Runtime.Injection
+ 
+         private static readonly MemoryUtils.SignatureDefinition[] s_ClassInitSignatures =
+         {
++            new MemoryUtils.SignatureDefinition
++            {
++                // Unity 2022.3 x64 - call to Class::Init from il2cpp_class_has_references
++                pattern = "\xE8\x00\x00\x00\x00\xF6\x83\x36\x01\x00\x00\x01\x74\x00\x0F\xB6\x83\x35\x01\x00\x00",
++                mask = "x????xxxxxxxx?xxxxxxx",
++                xref = true
++            },
+             new MemoryUtils.SignatureDefinition
+             {
+                 pattern = "\xE8\x00\x00\x00\x00\x0F\xB7\x47\x28\x83",
