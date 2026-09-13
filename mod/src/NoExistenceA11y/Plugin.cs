@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.8";
+        public const string Version = "0.0.0.9";
 
         internal static ManualLogSource L;
 
@@ -32,6 +32,8 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgRequirePrintEvent;
         internal static ConfigEntry<string> CfgSpeechBackend;
         internal static ConfigEntry<string> CfgRepeatKey;
+        internal static ConfigEntry<bool> CfgSpeechInterrupt;
+        internal static ConfigEntry<bool> CfgStopOnVoiced;
         internal static ConfigEntry<bool> CfgDiag;
         internal static ConfigEntry<bool> CfgAutoStart;
         internal static ConfigEntry<bool> CfgAutoPlay;
@@ -117,6 +119,23 @@ namespace NoExistenceA11y
                 "连按可以一直往回走（最多记 30 句）；读到新的一句就回到最新。\n" +
                 "记忆只在内存里，退出游戏即清空。\n" +
                 "留空可停用。填 Unity 的 KeyCode 名。");
+            CfgSpeechInterrupt = Config.Bind("朗读", "新台词打断上一句", false,
+                "★ 默认**关**。关掉时新台词排队，等上一句念完再念 —— 长句不会被截断。\n" +
+                "\n" +
+                "开启的话，每来一句就取消正在念的那句。剧情推进快的时候\n" +
+                "（比如自动播放）会不断把长句拦腰砍断，后半句永远听不到，\n" +
+                "这是实打实的信息丢失，所以不建议开。\n" +
+                "\n" +
+                "排队期间如果撞上「有配音的台词」，队列仍会被清掉让位给角色语音 ——\n" +
+                "否则 TTS 会和角色语音叠在一起，两边都听不清。\n" +
+                "想主动清空队列的话，用上面那个「重读键」听完再继续即可。");
+            CfgStopOnVoiced = Config.Bind("朗读", "撞上配音时清空待读队列", true,
+                "有配音的台词会放角色语音。此时若还有上一句在排队朗读，\n" +
+                "两者会叠在一起，两边都听不清 —— 所以默认为角色语音让路，清空队列。\n" +
+                "\n" +
+                "代价：如果上一句是长旁白还没念完，它会被砍断。\n" +
+                "想优先保证「一个字都不漏」，就关掉这个开关 ——\n" +
+                "代价是那一小段时间 TTS 和角色语音会重叠。");
             CfgDiag = Config.Bind("诊断", "详细日志", true, "把每一句的判定过程写进 BepInEx\\noexistence_a11y.log。");
             CfgAutoStart = Config.Bind("诊断", "自动开始游戏", false,
                 "测试用：引擎就绪后自动点掉标题画面的 START，省得人手点。正式游玩保持关闭。");
@@ -456,8 +475,10 @@ namespace NoExistenceA11y
 
             if (voiced)
             {
-                // 有游戏语音：先掐掉可能还在念的上一句，避免和语音重叠
-                Speech.Stop();
+                // 有游戏语音：默认掐掉还在排队的上一句，避免和角色语音叠在一起
+                // （叠起来两边都听不清）。但这也会把「上一句长旁白」砍断 ——
+                // 想优先保证一字不漏，就把下面那个开关关掉。
+                if (CfgStopOnVoiced == null || CfgStopOnVoiced.Value) Speech.Stop();
 
                 if (!narr && CfgAnnounceSpeaker.Value && CfgAnnounceOnVoiced.Value
                     && author != "Lilith" && author != "Lilith_1")
@@ -465,7 +486,8 @@ namespace NoExistenceA11y
                 return;
             }
 
-            Speech.Speak(line, true);
+            // 默认不打断：新台词排队，等上一句念完。长句被截断是实打实的信息丢失。
+            Speech.Speak(line, CfgSpeechInterrupt != null && CfgSpeechInterrupt.Value);
         }
     }
 
