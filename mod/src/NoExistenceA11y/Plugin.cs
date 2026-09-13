@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.10";
+        public const string Version = "0.0.0.11";
 
         internal static ManualLogSource L;
 
@@ -35,6 +35,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgSpeechInterrupt;
         internal static ConfigEntry<bool> CfgStopOnVoiced;
         internal static ConfigEntry<string> CfgSilenceKey;
+        internal static ConfigEntry<bool> CfgAnnounceLoading;
         internal static ConfigEntry<bool> CfgDiag;
         internal static ConfigEntry<bool> CfgAutoStart;
         internal static ConfigEntry<bool> CfgAutoPlay;
@@ -135,6 +136,12 @@ namespace NoExistenceA11y
                 "默认 0 —— 剧情里用不到数字键，不会和选项冲突\n" +
                 "（选项的数字键只在选项框出现时生效）。\n" +
                 "留空可停用。");
+            CfgAnnounceLoading = Config.Bind("朗读", "朗读「正在加载」", true,
+                "加载时念一句「正在加载。」\n" +
+                "读屏玩家在加载期间完全不知道游戏在干什么 —— 没画面可看、没声音可听，\n" +
+                "很容易以为卡死了然后去乱按。\n" +
+                "两条通路都认：Naninovel 的 LoadingPanel，以及名字里带 load 的 Unity 场景。\n" +
+                "不打断正在念的那句（加载本来就是等待，截断别人的话要不回来）。");
             CfgStopOnVoiced = Config.Bind("朗读", "撞上配音时清空待读队列", true,
                 "只在「新台词打断上一句」关掉（=启用排队）时才有意义。\n" +
                 "排队时空队列里还压着上一句，而这一句要放角色语音，两者会叠在一起、\n" +
@@ -338,33 +345,32 @@ namespace NoExistenceA11y
         // ==================== 重读上一句 ====================
 
         /// <summary>
-        /// 最近朗读过的剧情文本。**只在内存里，不落盘**（玩家要求的「非持久化记忆」）。
-        /// 按一次退格 = 重读最后一条；再按 = 继续往回走；读到新的一句就回到最新。
-        /// 有配音的行也会记进来 —— 语音错过了正需要重读文本。
+        /// 最近朗读过的一句剧情文本。**只在内存里，不落盘**（玩家要求的「非持久化记忆」）。
+        ///
+        /// 与 TransparentHer 完全对齐：
+        ///     if (Input.GetKeyDown(rk) && !string.IsNullOrEmpty(_lastSpoken))
+        ///         Speech.Speak(_lastSpoken, true);
+        /// 也就是**只重读最后一句**，不做回溯。
+        ///
+        /// 回溯版（连按往回走）虽然能翻回被截断的长句，但连按两下就退到了更早的
+        /// 句子，人会搞不清此刻听到的是哪一句 —— 那种「不知道自己在哪」更糟。
+        /// 想往回翻更多，用 Tab 打开回想（History）面板逐条走，那条路本来就有。
+        ///
+        /// 有配音的行也会记进来 —— 语音错过了，退格重读文本正是玩家要的。
         /// </summary>
-        private static readonly System.Collections.Generic.List<string> _recent =
-            new System.Collections.Generic.List<string>();
-        private static int _back;
-        private const int RecentMax = 30;
+        private static string _lastLine = "";
 
         internal static void Remember(string line)
         {
             if (string.IsNullOrEmpty(line)) return;
-            _back = 0;                            // 有新内容就回到最新
-            if (_recent.Count > 0 && _recent[_recent.Count - 1] == line) return;
-            _recent.Add(line);
-            if (_recent.Count > RecentMax) _recent.RemoveAt(0);
+            _lastLine = line;
         }
 
         internal static void RepeatBack()
         {
-            if (_recent.Count == 0) { Speech.Speak("还没有朗读过内容。", true); return; }
-            if (_back >= _recent.Count) { _back = _recent.Count; Speech.Speak("再往前没有了。", true); return; }
-
-            string line = _recent[_recent.Count - 1 - _back];
-            _back++;
-            Diag("重读 往回第 " + _back + " 句: " + Short(line));
-            Speech.Speak(line, true);
+            if (string.IsNullOrEmpty(_lastLine)) { Speech.Speak("还没有朗读过内容。", true); return; }
+            Diag("重读: " + Short(_lastLine));
+            Speech.Speak(_lastLine, true);
         }
 
         internal static void CheckRepeatHotkey()
@@ -538,6 +544,7 @@ namespace NoExistenceA11y
             try { Choices.Update(); } catch (Exception e) { Plugin.Diag("Choices: " + e.Message); }
             try { Plugin.CheckRepeatHotkey(); } catch (Exception e) { Plugin.Diag("Repeat: " + e.Message); }
             try { Plugin.CheckSilenceHotkey(); } catch (Exception e) { Plugin.Diag("Silence: " + e.Message); }
+            try { LoadingWatch.Update(); } catch (Exception e) { Plugin.Diag("Loading: " + e.Message); }
             try { Qte.Update(); } catch (Exception e) { Plugin.Diag("Qte: " + e.Message); }
             try { Diag.Update(); } catch (Exception e) { Plugin.Diag("Diag: " + e.Message); }
 
