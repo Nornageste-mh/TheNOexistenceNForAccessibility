@@ -595,10 +595,12 @@ namespace NoExistenceA11y
                     RectTransform rt = s != null ? As<RectTransform>(s.transform) : null;
                     if (byPosition && rt != null)
                     {
-                        rt.GetWorldCorners(_corners);   // 0=左下 1=左上 2=右上 3=右下
-                        float top = Mathf.Max(_corners[1].y, _corners[2].y);
-                        k.Left = Mathf.Min(_corners[0].x, _corners[1].x);
-                        k.Row = Mathf.RoundToInt(top / 4f);
+                        float top, left;
+                        if (ScreenTopLeft(rt, g.Camera, out top, out left))
+                        {
+                            k.Left = left;
+                            k.Row = Mathf.RoundToInt(top / 4f);   // 屏幕像素，4 像素一档
+                        }
                     }
                     if (s != null) k.Path = PathIndices(s.transform, g.Root).ToArray();
                 }
@@ -787,13 +789,51 @@ namespace NoExistenceA11y
             {
                 RectTransform rt = s != null ? As<RectTransform>(s.transform) : null;
                 if (rt == null) return "位置=?";
-                rt.GetWorldCorners(_corners);
-                float top = Mathf.Max(_corners[1].y, _corners[2].y);
-                float left = Mathf.Min(_corners[0].x, _corners[1].x);
+                float top, left;
+                if (!ScreenTopLeft(rt, s.GetComponentInParent<Canvas>() != null
+                        ? CanvasCamera(s) : null, out top, out left))
+                    return "位置=?";
                 return "行=" + Mathf.RoundToInt(top / 4f) + " 顶=" + Mathf.RoundToInt(top)
                      + " 左=" + Mathf.RoundToInt(left);
             }
             catch { return "位置=?"; }
+        }
+
+        private static Camera CanvasCamera(Component c)
+        {
+            try
+            {
+                var cv = c.GetComponentInParent<Canvas>();
+                if (cv == null) return null;
+                return cv.renderMode == RenderMode.ScreenSpaceOverlay ? null : cv.worldCamera;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// 取控件在**屏幕像素**坐标下的上边与左边。
+        ///
+        /// ⚠️ 必须换算，不能直接用 GetWorldCorners 的原始值。
+        /// 世界坐标的尺度取决于 Canvas 的 renderMode 与缩放：本作某些画布
+        /// 的世界单位极小（实测顶边 ≈ 4，而屏幕上是 1000 上下），
+        /// 而排序是按 `顶 / 4` 分档的 —— 拿世界坐标分档会把所有条目
+        /// 压进同一档，然后退化成按左右排，**上下顺序就全乱了**。
+        /// 这正是玩家报的「按下光标反而跳到上面」剩下的那一半原因。
+        /// </summary>
+        private static bool ScreenTopLeft(RectTransform rt, Camera cam, out float top, out float left)
+        {
+            top = 0f; left = 0f;
+            try
+            {
+                rt.GetWorldCorners(_corners);   // 0=左下 1=左上 2=右上 3=右下
+                Vector2 tl = RectTransformUtility.WorldToScreenPoint(cam, _corners[1]);
+                Vector2 tr = RectTransformUtility.WorldToScreenPoint(cam, _corners[2]);
+                Vector2 bl = RectTransformUtility.WorldToScreenPoint(cam, _corners[0]);
+                top = Mathf.Max(tl.y, tr.y);
+                left = Mathf.Min(bl.x, tl.x);
+                return true;
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -820,7 +860,7 @@ namespace NoExistenceA11y
                 if (Groups.Count > 0 && _groupIndex >= 0 && _groupIndex < Groups.Count)
                 {
                     Group g = Groups[_groupIndex];
-                    for (int i = 0; i < g.Items.Count; i++)
+                    for (int i = 0; i < g.Items.Count && i < 14; i++)
                     {
                         Component s = g.Items[i];
                         string desc = "?";
