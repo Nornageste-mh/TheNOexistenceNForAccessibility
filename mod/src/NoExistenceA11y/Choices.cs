@@ -32,7 +32,6 @@ namespace NoExistenceA11y
         private static readonly List<string> _labels = new List<string>();
         private static readonly List<Button> _buttons = new List<Button>();
         private static string _announcedKey = "";
-        private static bool _announcedHeader;
         private static int _lastChildCount = -1;
 
         /// <summary>由 Harmony 在 AddChoiceButton 之后调用：只记下面板，不做朗读。</summary>
@@ -173,7 +172,7 @@ namespace NoExistenceA11y
 
             if (!live)
             {
-                if (_labels.Count > 0) { _labels.Clear(); _buttons.Clear(); _announcedKey = ""; _announcedHeader = false; }
+                if (_labels.Count > 0) { _labels.Clear(); _buttons.Clear(); _announcedKey = ""; }
                 return;
             }
 
@@ -192,9 +191,26 @@ namespace NoExistenceA11y
                 _announcedKey = key;
                 if (wantRead)
                 {
-                    if (!_announcedHeader) { Speech.Speak("选项。", false); _announcedHeader = true; }
+                    // ★ 整组选项拼成**一段**念出去，与 TransparentHer 一致：
+                    //     sb.Append("共 ").Append(n).Append(" 个选项。");
+                    //     for (...) sb.Append("选项 ").Append(i+1).Append("：").Append(Label).Append("。");
+                    //     sb.Append("按数字键选择。");  Say(sb.ToString());
+                    //
+                    // 两个理由：
+                    //   1. 逐条念的时候，最后记住的只有「最后一条选项」——
+                    //      玩家按退格想重听选项，结果只听到一项。
+                    //      拼成一段再记住，退格重读的就是**整组选项**。
+                    //   2. 一次念完也让「选项」在语义上是一件事，而不是几句话。
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append("共 ").Append(_labels.Count).Append(" 个选项。");
                     for (int i = 0; i < _labels.Count; i++)
-                        Speech.Speak((i + 1) + "。" + _labels[i], false);
+                        sb.Append("选项 ").Append(i + 1).Append("：").Append(_labels[i]).Append("。");
+                    if (Plugin.CfgChoiceHotkeys == null || Plugin.CfgChoiceHotkeys.Value)
+                        sb.Append("按数字键选择。");
+
+                    string announce = sb.ToString();
+                    Plugin.Remember(announce);            // 退格能重读整组选项
+                    Speech.Speak(announce, false);
                 }
                 Plugin.Diag("CHOICE 播报 " + _labels.Count + " 项: " + key);
             }

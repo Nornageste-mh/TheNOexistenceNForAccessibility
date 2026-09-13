@@ -1,0 +1,27 @@
+0.0.0.12: 选项也纳入「重读」对象（对齐 TransparentHer）
+
+玩家指出：旧仓库里按退格是会朗读选项的，选项也能作为被重读的对象。
+
+去看旧仓库的实现，关键在 AnnounceChoices()：
+
+    var sb = new StringBuilder();
+    sb.Append("共 ").Append(Choices.Count).Append(" 个选项。");
+    for (int i = 0; i < Choices.Count; i++)
+        sb.Append("选项 ").Append(i + 1).Append("：").Append(Choices[i].Label).Append("。");
+    sb.Append("按数字键选择。");
+    Say(sb.ToString());
+
+整组选项拼成**一段**、一次 Say 出去，于是 _lastSpoken 就是整组选项，
+退格重读的自然也是整组。
+
+我这边有两个偏差，都改了：
+1. 原来是逐条 Speech.Speak((i+1) + "。" + label)，于是「最近说过的」只剩最后一条 ——
+   玩家按退格想重听选项，结果只听到一项。现在改成拼成一段一次念完。
+2. 原来选项压根没进 Remember，退格重读的还是上一句剧情。现在选项播报会
+   Plugin.Remember(announce)，退格重读整组选项。
+
+顺带把公告文案也对齐旧仓库的措辞：
+「共 N 个选项。选项 1：xxx。选项 2：yyy。按数字键选择。」
+
+文档：安装说明.md 的按键表与「重读键」条目改为「重读最近朗读过的那一段」，
+并说明「一段」这个措辞的用意 —— 选项也算重读对象。
