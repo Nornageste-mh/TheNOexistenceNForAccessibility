@@ -1,0 +1,28 @@
+0.0.0.10: 语音控制对齐 TransparentHer —— 加沉默键，恢复默认打断
+
+玩家问「这些方案是不是有点奇怪，TransparentHer 是怎么做的」，去看了旧仓库：
+
+  private static void Say(string text, bool interrupt = true)   // 默认打断
+  // 有配音：不朗读，并打断上一句未读完的朗读，避免与语音重叠
+  Speech.Stop(); _lastSpoken = "";
+
+  CfgSilenceKey = Config.Bind("朗读", "沉默按键", "0", ...)
+  CfgRepeatKey  = Config.Bind("朗读", "重读按键", "Backspace", ...)
+
+也就是说 TransparentHer **根本没做排队**。它的模型是：读得激进、允许打断，
+把控制权交给玩家 —— 嫌长按静音，没听清按重读。
+上一版我加的排队会让朗读滞后于画面，那才是真正别扭的地方。
+
+对齐动作：
+- [朗读] 新台词打断上一句 默认恢复为**开**（= TransparentHer 的 interrupt: true）。
+  排队保留为可选项，给「宁可慢也不要漏」的人用。
+- 新增 [朗读] 沉默键，默认 0（对齐 TransparentHer 的沉默按键）。
+  之前这个键我漏了 —— 没有它，长得离谱的一句只能干等。
+- [朗读] 撞上配音时清空待读队列 保留，但注明只在排队模式下有意义；
+  打断模式下「有配音就 Speech.Stop()」本来就是 TransparentHer 的原始行为。
+
+关于长句被截断：TransparentHer 也有同样行为，它靠静音+重读补偿。
+本作的重读记最近 30 句（TransparentHer 只记一句），
+所以被截断的那句按几次退格就能翻回来，比旧仓库更经得起翻。
+
+文档：安装说明.md 补上沉默键与三项语音配置。

@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.9";
+        public const string Version = "0.0.0.10";
 
         internal static ManualLogSource L;
 
@@ -34,6 +34,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<string> CfgRepeatKey;
         internal static ConfigEntry<bool> CfgSpeechInterrupt;
         internal static ConfigEntry<bool> CfgStopOnVoiced;
+        internal static ConfigEntry<string> CfgSilenceKey;
         internal static ConfigEntry<bool> CfgDiag;
         internal static ConfigEntry<bool> CfgAutoStart;
         internal static ConfigEntry<bool> CfgAutoPlay;
@@ -119,23 +120,28 @@ namespace NoExistenceA11y
                 "连按可以一直往回走（最多记 30 句）；读到新的一句就回到最新。\n" +
                 "记忆只在内存里，退出游戏即清空。\n" +
                 "留空可停用。填 Unity 的 KeyCode 名。");
-            CfgSpeechInterrupt = Config.Bind("朗读", "新台词打断上一句", false,
-                "★ 默认**关**。关掉时新台词排队，等上一句念完再念 —— 长句不会被截断。\n" +
+            CfgSpeechInterrupt = Config.Bind("朗读", "新台词打断上一句", true,
+                "★ 默认**开**，与 TransparentHer 一致：Say(text, interrupt: true)。\n" +
                 "\n" +
-                "开启的话，每来一句就取消正在念的那句。剧情推进快的时候\n" +
-                "（比如自动播放）会不断把长句拦腰砍断，后半句永远听不到，\n" +
-                "这是实打实的信息丢失，所以不建议开。\n" +
+                "开着的时候每来一句就取消正在念的那句 —— 读得激进，但不会让朗读\n" +
+                "滞后于画面。长句没念完被打断的话，用「重读键」往回翻即可\n" +
+                "（这里记最近 30 句，比 TransparentHer 只记一句更经得起翻）。\n" +
+                "嫌某句太啰嗦就按「沉默键」让它闭嘴。\n" +
                 "\n" +
-                "排队期间如果撞上「有配音的台词」，队列仍会被清掉让位给角色语音 ——\n" +
-                "否则 TTS 会和角色语音叠在一起，两边都听不清。\n" +
-                "想主动清空队列的话，用上面那个「重读键」听完再继续即可。");
+                "关掉则改为排队等上一句念完 —— 一个字都不丢，但朗读会滞后于画面。\n" +
+                "对听不见画面的盲人玩家滞后无所谓，这是给「宁可慢也不要漏」的人准备的。");
+            CfgSilenceKey = Config.Bind("朗读", "沉默键", "0",
+                "按一下立刻让朗读闭嘴（相当于 TransparentHer 的「沉默按键」）。\n" +
+                "默认 0 —— 剧情里用不到数字键，不会和选项冲突\n" +
+                "（选项的数字键只在选项框出现时生效）。\n" +
+                "留空可停用。");
             CfgStopOnVoiced = Config.Bind("朗读", "撞上配音时清空待读队列", true,
-                "有配音的台词会放角色语音。此时若还有上一句在排队朗读，\n" +
-                "两者会叠在一起，两边都听不清 —— 所以默认为角色语音让路，清空队列。\n" +
+                "只在「新台词打断上一句」关掉（=启用排队）时才有意义。\n" +
+                "排队时空队列里还压着上一句，而这一句要放角色语音，两者会叠在一起、\n" +
+                "两边都听不清，所以默认为角色语音让路。\n" +
                 "\n" +
-                "代价：如果上一句是长旁白还没念完，它会被砍断。\n" +
-                "想优先保证「一个字都不漏」，就关掉这个开关 ——\n" +
-                "代价是那一小段时间 TTS 和角色语音会重叠。");
+                "打断模式（默认）下不存在队列，这一项不起作用 ——\n" +
+                "那种情况下「有配音就 Speech.Stop()」是 TransparentHer 的原始行为。");
             CfgDiag = Config.Bind("诊断", "详细日志", true, "把每一句的判定过程写进 BepInEx\\noexistence_a11y.log。");
             CfgAutoStart = Config.Bind("诊断", "自动开始游戏", false,
                 "测试用：引擎就绪后自动点掉标题画面的 START，省得人手点。正式游玩保持关闭。");
@@ -378,6 +384,27 @@ namespace NoExistenceA11y
             if (down) RepeatBack();
         }
 
+        /// <summary>沉默键：立刻让朗读闭嘴。对齐 TransparentHer 的「沉默按键」。</summary>
+        internal static void CheckSilenceHotkey()
+        {
+            KeyCode k;
+            try
+            {
+                string s = CfgSilenceKey != null ? CfgSilenceKey.Value : "0";
+                if (string.IsNullOrEmpty(s)) return;
+                k = (KeyCode)Enum.Parse(typeof(KeyCode), s.Trim(), true);
+            }
+            catch { return; }
+            if (k == KeyCode.None) return;
+
+            bool down;
+            try { down = Input.GetKeyDown(k); } catch { return; }
+            if (!down) return;
+
+            Speech.Stop();
+            Diag("沉默键：" + k + " 已停止朗读");
+        }
+
         // ==================== set_Text 触发 ====================
 
         private static string _lastPrint = "";
@@ -510,6 +537,7 @@ namespace NoExistenceA11y
             }
             try { Choices.Update(); } catch (Exception e) { Plugin.Diag("Choices: " + e.Message); }
             try { Plugin.CheckRepeatHotkey(); } catch (Exception e) { Plugin.Diag("Repeat: " + e.Message); }
+            try { Plugin.CheckSilenceHotkey(); } catch (Exception e) { Plugin.Diag("Silence: " + e.Message); }
             try { Qte.Update(); } catch (Exception e) { Plugin.Diag("Qte: " + e.Message); }
             try { Diag.Update(); } catch (Exception e) { Plugin.Diag("Diag: " + e.Message); }
 
