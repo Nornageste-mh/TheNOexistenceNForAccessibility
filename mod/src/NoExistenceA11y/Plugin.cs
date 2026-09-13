@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.5";
+        public const string Version = "0.0.0.6";
 
         internal static ManualLogSource L;
 

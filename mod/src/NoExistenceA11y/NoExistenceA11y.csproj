@@ -5,7 +5,7 @@
     <AssemblyName>NoExistenceA11y</AssemblyName>
     <RootNamespace>NoExistenceA11y</RootNamespace>
     <!-- 纯数字四段，不要加字母：AssemblyVersion / BepInPlugin 都按 System.Version 解析 -->
-    <Version>0.0.0.5</Version>
+    <Version>0.0.0.6</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>

@@ -621,13 +621,33 @@ namespace NoExistenceA11y
             public int[] Path;     // 渲染层级，仅用于位置完全重合时
         }
 
-        private static readonly Vector3[] _corners = new Vector3[4];
+        /// <summary>
+        /// ⚠️ 必须是 Il2CppStructArray，**不能**是托管 Vector3[]。
+        ///
+        /// 这是本项目第三个「IL2CPP 静默失败」：
+        /// 托管数组传给原生方法时会被**拷贝**过去，原生写入的结果不会回流。
+        /// 于是 GetWorldCorners 之后 _corners 仍然是全 0 —— 而它不报错。
+        ///
+        /// 后果非常隐蔽：所有控件的「屏幕位置」都是 (0,0)，
+        ///   · 排序全部并列 -> 退化成按层级路径排 -> **上下键顺序和画面对不上**
+        ///   · 可见性判断里的「屏幕矩形是否相交」恒真，等于这道检查形同虚设
+        /// 一直没人发现，是因为射线那道检查还在正常工作、把大部分问题兜住了。
+        /// </summary>
+        private static readonly Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<Vector3> _corners =
+            new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<Vector3>(4);
 
         private static int CompareKey(ItemKey a, ItemKey b)
         {
-            if (a.Row != b.Row) return b.Row.CompareTo(a.Row);                        // 上 → 下
-            if (Mathf.Abs(a.Left - b.Left) > 0.01f) return a.Left.CompareTo(b.Left);  // 左 → 右
-            return CompareIndexPath(a.Path, b.Path);                                  // 重合看渲染层级
+            // 必须是**严格全序**：List.Sort 用的是内省排序，比较函数只要不满足
+            // 传递性，排出来的结果就是任意的（而且不报错）。原版这里是
+            //     if (Mathf.Abs(a.Left - b.Left) > 0.01f) return a.Left.CompareTo(b.Left);
+            // 拿「近似相等」当分支条件，正是典型的非传递比较：
+            // a≈b、b≈c 但 a 与 c 差得远时，三者顺序可以任意。
+            // 现在改成严格的字典序：行 -> 列 -> 渲染层级。
+            if (a.Row != b.Row) return b.Row.CompareTo(a.Row);   // 上 → 下
+            int c = a.Left.CompareTo(b.Left);                    // 左 → 右
+            if (c != 0) return c;
+            return CompareIndexPath(a.Path, b.Path);             // 完全重合看渲染层级
         }
 
         private static int ComparePathOnly(ItemKey a, ItemKey b)
