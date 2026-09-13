@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.7";
+        public const string Version = "0.0.0.8";
 
         internal static ManualLogSource L;
 
@@ -31,6 +31,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgReadTrivial;
         internal static ConfigEntry<bool> CfgRequirePrintEvent;
         internal static ConfigEntry<string> CfgSpeechBackend;
+        internal static ConfigEntry<string> CfgRepeatKey;
         internal static ConfigEntry<bool> CfgDiag;
         internal static ConfigEntry<bool> CfgAutoStart;
         internal static ConfigEntry<bool> CfgAutoPlay;
@@ -51,6 +52,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgUiVisibleOnly;
         internal static ConfigEntry<bool> CfgUiSortByPosition;
         internal static ConfigEntry<string> CfgUiTextWhitelist;
+        internal static ConfigEntry<bool> CfgNavBlockInput;
         internal static ConfigEntry<bool> CfgQuitConfirm;
         internal static ConfigEntry<string> CfgQuitNames;
         internal static ConfigEntry<string> CfgUiBlockedPaths;
@@ -110,6 +112,11 @@ namespace NoExistenceA11y
                 "开启后只朗读同时收到「开始打印」事件的行。");
             CfgSpeechBackend = Config.Bind("朗读", "语音后端", "自动",
                 "自动 / NVDA / Tolk / SAPI。填具体值可强制只用那一个（排查用）。");
+            CfgRepeatKey = Config.Bind("朗读", "重读键", "Backspace",
+                "按这个键重读最近朗读过的剧情文本。\n" +
+                "连按可以一直往回走（最多记 30 句）；读到新的一句就回到最新。\n" +
+                "记忆只在内存里，退出游戏即清空。\n" +
+                "留空可停用。填 Unity 的 KeyCode 名。");
             CfgDiag = Config.Bind("诊断", "详细日志", true, "把每一句的判定过程写进 BepInEx\\noexistence_a11y.log。");
             CfgAutoStart = Config.Bind("诊断", "自动开始游戏", false,
                 "测试用：引擎就绪后自动点掉标题画面的 START，省得人手点。正式游玩保持关闭。");
@@ -176,6 +183,15 @@ namespace NoExistenceA11y
                 "\n" +
                 "按钮/开关自带的标签会自动跳过，不会重复念。\n" +
                 "留空可停用。");
+            CfgNavBlockInput = Config.Bind("界面导航", "导航时屏蔽游戏输入", true,
+                "★ 建议保持开启。\n" +
+                "回车/空格同时是「激活当前控件」和「推进剧情」。不屏蔽的话，\n" +
+                "在回想面板里按回车重念一句，剧情会跟着往前走一格 ——\n" +
+                "玩家只是想重听，位置却变了。\n" +
+                "\n" +
+                "用的是引擎自己的接口 IInputManager.ProcessInput，不是去改游戏代码：\n" +
+                "进入导航时记下当时的值再关掉，退出时还原成记下的那个值，\n" +
+                "所以不会覆盖游戏自己因为别的原因（比如播片）关掉的输入。");
             CfgQuitConfirm = Config.Bind("界面导航", "退出前二次确认", true,
                 "「退出游戏」只按一下就关掉整个会话，而读屏用户分不清它和旁边的按钮，所以补一道确认。");
             CfgQuitNames = Config.Bind("界面导航", "退出按钮对象名", "ExitButton,QuitGame,ExitGameButton,QuitButton",
@@ -294,6 +310,55 @@ namespace NoExistenceA11y
             return s.Length <= 60 ? s : s.Substring(0, 60) + "…";
         }
 
+        // ==================== 重读上一句 ====================
+
+        /// <summary>
+        /// 最近朗读过的剧情文本。**只在内存里，不落盘**（玩家要求的「非持久化记忆」）。
+        /// 按一次退格 = 重读最后一条；再按 = 继续往回走；读到新的一句就回到最新。
+        /// 有配音的行也会记进来 —— 语音错过了正需要重读文本。
+        /// </summary>
+        private static readonly System.Collections.Generic.List<string> _recent =
+            new System.Collections.Generic.List<string>();
+        private static int _back;
+        private const int RecentMax = 30;
+
+        internal static void Remember(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return;
+            _back = 0;                            // 有新内容就回到最新
+            if (_recent.Count > 0 && _recent[_recent.Count - 1] == line) return;
+            _recent.Add(line);
+            if (_recent.Count > RecentMax) _recent.RemoveAt(0);
+        }
+
+        internal static void RepeatBack()
+        {
+            if (_recent.Count == 0) { Speech.Speak("还没有朗读过内容。", true); return; }
+            if (_back >= _recent.Count) { _back = _recent.Count; Speech.Speak("再往前没有了。", true); return; }
+
+            string line = _recent[_recent.Count - 1 - _back];
+            _back++;
+            Diag("重读 往回第 " + _back + " 句: " + Short(line));
+            Speech.Speak(line, true);
+        }
+
+        internal static void CheckRepeatHotkey()
+        {
+            KeyCode k;
+            try
+            {
+                string s = CfgRepeatKey != null ? CfgRepeatKey.Value : "Backspace";
+                if (string.IsNullOrEmpty(s)) return;
+                k = (KeyCode)Enum.Parse(typeof(KeyCode), s.Trim(), true);
+            }
+            catch { return; }
+            if (k == KeyCode.None) return;
+
+            bool down;
+            try { down = Input.GetKeyDown(k); } catch { return; }
+            if (down) RepeatBack();
+        }
+
         // ==================== set_Text 触发 ====================
 
         private static string _lastPrint = "";
@@ -384,6 +449,11 @@ namespace NoExistenceA11y
 
             bool narr = string.IsNullOrEmpty(author);
 
+            string line = narr || !CfgAnnounceSpeaker.Value ? speech : (name + "：" + speech);
+
+            // 有配音的行也记进来 —— 语音错过了，退格重读文本正是玩家要的
+            Remember(line);
+
             if (voiced)
             {
                 // 有游戏语音：先掐掉可能还在念的上一句，避免和语音重叠
@@ -395,7 +465,6 @@ namespace NoExistenceA11y
                 return;
             }
 
-            string line = narr || !CfgAnnounceSpeaker.Value ? speech : (name + "：" + speech);
             Speech.Speak(line, true);
         }
     }
@@ -418,6 +487,7 @@ namespace NoExistenceA11y
                 try { UiNav.Update(); } catch (Exception e) { Plugin.Diag("UiNav: " + e.Message); }
             }
             try { Choices.Update(); } catch (Exception e) { Plugin.Diag("Choices: " + e.Message); }
+            try { Plugin.CheckRepeatHotkey(); } catch (Exception e) { Plugin.Diag("Repeat: " + e.Message); }
             try { Qte.Update(); } catch (Exception e) { Plugin.Diag("Qte: " + e.Message); }
             try { Diag.Update(); } catch (Exception e) { Plugin.Diag("Diag: " + e.Message); }
 

@@ -164,6 +164,7 @@ namespace NoExistenceA11y
 
             _active = true;
             _index = 0;
+            BlockGameInput(true);
             AnnounceGroup(true);
         }
 
@@ -176,9 +177,60 @@ namespace NoExistenceA11y
             _announcedItem = null;
             ClearQuitConfirm();
             ReleaseSelection();
+            BlockGameInput(false);
             if (announce)
             {
                 try { Speech.Speak("已退出导航模式。", true); } catch { }
+            }
+        }
+
+        // ================= 导航模式下屏蔽游戏自身的输入 =================
+
+        private static bool _inputBlocked;
+        private static bool _prevProcessInput = true;
+
+        /// <summary>
+        /// 导航模式期间把 Naninovel 的输入总开关关掉。
+        ///
+        /// 为什么需要：回车/空格同时是「激活当前控件」和「推进剧情」。
+        /// 不屏蔽的话，在回想面板里按回车重念一句，剧情会跟着往前走一格 ——
+        /// 玩家只是想重听，结果位置变了。
+        ///
+        /// 用的是引擎自己的接口 `IInputManager.ProcessInput`，不是去 patch 游戏代码：
+        ///   · 它是官方提供的「暂停处理输入」总闸，语义正好
+        ///   · 完全可逆，退出导航就还原
+        ///   · 进入时**记下当时的值**再改，退出时还原成记下的那个值 ——
+        ///     这样不会覆盖游戏自己因为别的原因（比如播片）关掉的输入
+        /// </summary>
+        private static void BlockGameInput(bool block)
+        {
+            try
+            {
+                if (Plugin.CfgNavBlockInput != null && !Plugin.CfgNavBlockInput.Value) return;
+
+                var im = Naninovel.Engine.GetService<Naninovel.IInputManager>();
+                if (im == null) return;
+
+                if (block)
+                {
+                    if (_inputBlocked) return;
+                    _prevProcessInput = im.ProcessInput;
+                    im.ProcessInput = false;
+                    _inputBlocked = true;
+                    Plugin.Diag("导航模式：已屏蔽游戏输入（原值 " + _prevProcessInput + "）");
+                }
+                else
+                {
+                    if (!_inputBlocked) return;
+                    im.ProcessInput = _prevProcessInput;
+                    _inputBlocked = false;
+                    Plugin.Diag("导航模式：已还原游戏输入（" + _prevProcessInput + "）");
+                }
+            }
+            catch (Exception e)
+            {
+                _inputBlocked = false;
+                Plugin.Diag("屏蔽游戏输入失败: " + e.GetType().Name + ": " + e.Message);
             }
         }
 
