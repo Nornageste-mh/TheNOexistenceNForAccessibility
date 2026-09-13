@@ -14,6 +14,22 @@
     <!-- 源文件是 UTF-8 无 BOM，且含中文；不加这行 Roslyn 会按系统代码页(GBK)读，中文字面量会变成乱码 -->
     <CodePage>65001</CodePage>
     <NoWarn>$(NoWarn);CS0436;CS0437;CS1701;CS1702</NoWarn>
+
+    <!-- ================= 可复现构建（别删） =================
+         不加这三行的话，同一个 HEAD 内连续构建两次结果一样，
+         但「换一个提交再构建」产物立刻变 —— 等于没修好。
+         两条独立通路都会把当前 git 提交写进产物：
+           1. IncludeSourceRevisionInInformationalVersion（SDK 默认 true）
+              把提交号写进 AssemblyInformationalVersion，DLL 里能直接搜到
+           2. EnableSourceLink（SDK 默认 true，藏在有效属性里）
+              把提交写进 PDB，PDB 的内容哈希又会进 DLL 的 debug 目录(PDB GUID)
+              和确定性 MVID —— 只关掉第 1 条是不够的
+         我们又不发布 PDB，Source Link 在这个项目里没有任何收益。
+         上一个仓库（TransparentHer）就是只关了第 1 条、以为修好了，
+         一提交才发现产物还是变。 -->
+    <Deterministic>true</Deterministic>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <EnableSourceLink>false</EnableSourceLink>
   </PropertyGroup>
 
   <PropertyGroup>
