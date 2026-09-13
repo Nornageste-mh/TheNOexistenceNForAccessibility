@@ -37,9 +37,17 @@ namespace NoExistenceA11y
             if (Time.realtimeSinceStartup - _lastAnnounce < Debounce) return;
             _lastAnnounce = Time.realtimeSinceStartup;
             Plugin.Diag("加载播报（" + why + "）");
-            // 不打断：正在念的那句让它念完，加载提示排在后面。
-            // 加载本来就是等待，不缺这一两秒，而截断别人的话是要不回来的。
-            Speech.Speak("正在加载。", false);
+
+            // ★ 必须**打断**，不能排队。
+            //
+            // 之前这里用的是 false（不打断），结果玩家点了「开始游戏」之后
+            // 半天听不到任何反馈 —— 因为这句「正在加载」排在上一句台词的后面，
+            // 而上一句可能还要念好几秒。玩家的第一反应是「补丁坏了 / 我点错了」，
+            // 然后开始乱按，反而把状态搞乱。
+            //
+            // 加载提示回答的正是「为什么现在没反应」，时效性就是它的全部价值。
+            // 被它打断的那句可以按退格重读，代价很小。
+            Speech.Speak("正在加载。", true);
         }
 
         private static Naninovel.UI.LoadingPanel Find()

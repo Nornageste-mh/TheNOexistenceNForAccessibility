@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Text;
 using BepInEx;
@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.12";
+        public const string Version = "0.1.0.0";
 
         internal static ManualLogSource L;
 
@@ -37,6 +37,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<string> CfgSilenceKey;
         internal static ConfigEntry<bool> CfgAnnounceLoading;
         internal static ConfigEntry<bool> CfgDiag;
+        internal static ConfigEntry<bool> CfgHideConsole;
         internal static ConfigEntry<bool> CfgAutoStart;
         internal static ConfigEntry<bool> CfgAutoPlay;
         internal static ConfigEntry<string> CfgJumpScript;
@@ -141,7 +142,9 @@ namespace NoExistenceA11y
                 "读屏玩家在加载期间完全不知道游戏在干什么 —— 没画面可看、没声音可听，\n" +
                 "很容易以为卡死了然后去乱按。\n" +
                 "两条通路都认：Naninovel 的 LoadingPanel，以及名字里带 load 的 Unity 场景。\n" +
-                "不打断正在念的那句（加载本来就是等待，截断别人的话要不回来）。");
+                "`n" +
+                "这句会**打断**正在念的台词 —— 它回答的正是「为什么现在没反应」，`n" +
+                "晚说几秒就失去意义了。被它打断的那句可以按「重读键」翻回来。");
             CfgStopOnVoiced = Config.Bind("朗读", "撞上配音时清空待读队列", true,
                 "只在「新台词打断上一句」关掉（=启用排队）时才有意义。\n" +
                 "排队时空队列里还压着上一句，而这一句要放角色语音，两者会叠在一起、\n" +
@@ -150,11 +153,16 @@ namespace NoExistenceA11y
                 "打断模式（默认）下不存在队列，这一项不起作用 ——\n" +
                 "那种情况下「有配音就 Speech.Stop()」是 TransparentHer 的原始行为。");
             CfgDiag = Config.Bind("诊断", "详细日志", true, "把每一句的判定过程写进 BepInEx\\noexistence_a11y.log。");
+            CfgHideConsole = Config.Bind("诊断", "隐藏控制台窗口", true,
+                "把 BepInEx 那个黑色控制台窗口藏起来。对玩家来说它就是「游戏旁边`n" +
+                "多出来一个看不懂的黑框」，很容易被当成木马或报错。`n" +
+                "日志照样写进 LogOutput.log，诊断能力一点没少。`n" +
+                "排查问题时想看实时日志就把它关掉。");
             CfgAutoStart = Config.Bind("诊断", "自动开始游戏", false,
                 "测试用：引擎就绪后自动点掉标题画面的 START，省得人手点。正式游玩保持关闭。");
             CfgAutoPlay = Config.Bind("诊断", "自动推进剧情", false,
                 "测试用：开启 Naninovel 自动播放，让剧情自己往下走，不依赖任何模拟点击。正式游玩保持关闭。");
-            CfgJumpScript = Config.Bind("诊断", "跳转脚本", "Prologue1_6",
+            CfgJumpScript = Config.Bind("诊断", "跳转脚本", "",
                 "★ 诊断功能。在游戏里按下面的热键，直接跳到这个剧本的**开头**播放。\n" +
                 "用途：QTE 在第一章末尾，进度过了就够不着，没法回头验证功能。\n" +
                 "从开头播 = 脚本自己的立绘装配命令都会执行，不会出现分层错乱。\n" +
@@ -164,7 +172,7 @@ namespace NoExistenceA11y
                 "两个都试一下。填别的剧本名也行，比如 Prologue2_1。\n" +
                 "\n" +
                 "⚠️ 会打乱正常流程，而且游戏会自动存档。用之前先备份 Saves 目录。");
-            CfgJumpHotkey = Config.Bind("诊断", "跳转热键", "F4",
+            CfgJumpHotkey = Config.Bind("诊断", "跳转热键", "",
                 "触发上面那个跳转的按键。填 Unity 的 KeyCode 名，例如 F4 / F5 / BackQuote。\n" +
                 "留空可停用。");
 
@@ -239,6 +247,8 @@ namespace NoExistenceA11y
 
             // QTE 自动点击的运行时开关：初值取自配置，游戏里可用热键随时切换
             Qte.AutoOn = CfgQteAutoPass.Value;
+
+            HideConsoleWindow();
 
             DiagPath = Path.Combine(Paths.BepInExRootPath, "noexistence_a11y.log");
             try
@@ -333,6 +343,38 @@ namespace NoExistenceA11y
             };
             Diag(string.Format("EVENT  author={0} printer={1} key={2} ref={3}",
                 author ?? "(空)", printerId ?? "?", Current.LineKey ?? "-", Short(reference)));
+        }
+
+        // ==================== 隐藏 BepInEx 控制台窗口 ====================
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern IntPtr GetConsoleWindow();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        /// <summary>
+        /// 把 BepInEx 那个黑色控制台窗口藏起来。
+        ///
+        /// 对玩家来说它就是「游戏旁边多出来一个看不懂的黑框」，很容易被当成
+        /// 木马或者报错。日志照样写进 LogOutput.log，诊断能力一点没少。
+        ///
+        /// 这是**运行时隐藏**而不是去改 BepInEx.cfg —— 后者是 BepInEx 自己的
+        /// 配置文件，我们不该去动它，而且用户很可能已经装过 BepInEx、
+        /// 我们改了也未必生效。自己藏掉最干净，也不影响别的插件。
+        ///
+        /// 想看控制台就把配置里的「隐藏控制台窗口」关掉。
+        /// </summary>
+        private static void HideConsoleWindow()
+        {
+            try
+            {
+                if (CfgHideConsole == null || !CfgHideConsole.Value) return;
+                IntPtr h = GetConsoleWindow();
+                if (h == IntPtr.Zero) return;      // 本来就没有控制台（比如从 Steam 启动且已关）
+                ShowWindow(h, 0);                  // SW_HIDE
+            }
+            catch { }
         }
 
         private static string Short(string s)
