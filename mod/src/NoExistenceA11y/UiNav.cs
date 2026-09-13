@@ -86,7 +86,7 @@ namespace NoExistenceA11y
             public Transform Root;
             public int CanvasOrder;
             public int SiblingIndex;
-            public readonly List<Selectable> Items = new List<Selectable>();
+            public readonly List<Component> Items = new List<Component>();
 
             // 本组所在 Canvas 的世界矩形与相机：用来判断成员是不是真的在画面上
             public Rect CanvasRect;
@@ -110,7 +110,7 @@ namespace NoExistenceA11y
         }
         private static readonly List<Group> Groups = new List<Group>();
         private static int _groupIndex;
-        private static List<Selectable> Items { get { return Groups[_groupIndex].Items; } }
+        private static List<Component> Items { get { return Groups[_groupIndex].Items; } }
 
         private static bool _active;
         private static int _index;
@@ -127,10 +127,10 @@ namespace NoExistenceA11y
 
         // 上一次朗读过的控件。重扫后如果这个位置换了别的控件，必须重新播报 ——
         // 否则玩家以为还停在刚才听的那一项上，按下去却是另一个东西。
-        private static Selectable _announcedItem;
+        private static Component _announcedItem;
 
         // 当前项失效时我们请求过一次重扫，记下来免得每帧都重扫
-        private static Selectable _rescanRequestedFor;
+        private static Component _rescanRequestedFor;
 
         // 场景切换防护
         private static int _lastSceneHandle = int.MinValue;
@@ -332,6 +332,53 @@ namespace NoExistenceA11y
                     }
                 }
 
+                // ★ 白名单界面里的「纯文本」也纳入导航。
+                //
+                // 回想（History）面板里每条台词就是一个纯 TMP_Text，没有对应的
+                // Selectable —— 按原来的做法，读屏玩家打开回想之后什么都读不到。
+                //
+                // 把这些文字也做成导航项之后：方向键逐条翻、回车重念当前这条，
+                // 等于把「重读上一句」和「回想朗读」两件事一次解决，
+                // 而且是**游戏本来就有的交互**，不用我们再造一套。
+                //
+                // 两个过滤条件：
+                //   · 跳过按钮/开关自带的标签 —— 那些由控件本身代表，重复念是噪声
+                //   · 跳过被 CanvasGroup 藏起来的
+                string wl = Plugin.CfgUiTextWhitelist != null ? Plugin.CfgUiTextWhitelist.Value : "";
+                if (!string.IsNullOrEmpty(wl))
+                {
+                    string[] frags = wl.Split(',');
+                    var texts = Resources.FindObjectsOfTypeAll<TMPro.TMP_Text>();
+                    int addedText = 0;
+                    for (int i = 0; i < texts.Length; i++)
+                    {
+                        var tx = texts[i];
+                        if (tx == null || tx.gameObject == null) continue;
+                        if (!tx.gameObject.activeInHierarchy) continue;
+
+                        string body = tx.text;
+                        if (string.IsNullOrEmpty(body) || body.Trim().Length == 0) continue;
+
+                        // 控件自己的标签不算
+                        try { if (tx.GetComponentInParent<Selectable>() != null) continue; } catch { }
+
+                        string path = PathOf(tx.transform);
+                        bool hit = false;
+                        for (int k = 0; k < frags.Length; k++)
+                        {
+                            string f = frags[k].Trim();
+                            if (f.Length > 0 && path.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0) { hit = true; break; }
+                        }
+                        if (!hit) continue;
+                        if (HiddenByCanvasGroup(tx.transform)) continue;
+
+                        Group g = GroupOf(tx);
+                        if (g != null) { g.Items.Add(tx); addedText++; }
+                    }
+                    if (diag && addedText > 0)
+                        Plugin.L.LogInfo("[UiNav] 白名单文字纳入导航 " + addedText + " 条（" + wl + "）");
+                }
+
                 if (allDump != null && Plugin.L != null)
                 {
                     var db = new StringBuilder();
@@ -475,7 +522,7 @@ namespace NoExistenceA11y
         }
 
         /// <summary>取该控件在 Canvas 下的顶层祖先作为分组依据。</summary>
-        private static Group GroupOf(Selectable s)
+        private static Group GroupOf(Component s)
         {
             try
             {
@@ -541,7 +588,7 @@ namespace NoExistenceA11y
             var keys = new List<ItemKey>(g.Items.Count);
             for (int i = 0; i < g.Items.Count; i++)
             {
-                Selectable s = g.Items[i];
+                Component s = g.Items[i];
                 var k = new ItemKey { S = s, Row = int.MinValue, Left = float.MaxValue, Path = null };
                 try
                 {
@@ -568,7 +615,7 @@ namespace NoExistenceA11y
 
         private struct ItemKey
         {
-            public Selectable S;
+            public Component S;
             public int Row;        // 屏幕上下：值越大越靠上
             public float Left;     // 屏幕左右：值越小越靠左
             public int[] Path;     // 渲染层级，仅用于位置完全重合时
@@ -638,7 +685,7 @@ namespace NoExistenceA11y
         ///
         /// 判不出来时一律「不排除」：少一个控件是功能缺失，多一个控件只是噪声。
         /// </summary>
-        private static bool VisiblyClickable(Selectable s, Group g)
+        private static bool VisiblyClickable(Component s, Group g)
         {
             try
             {
@@ -714,7 +761,7 @@ namespace NoExistenceA11y
             catch { return "?"; }
         }
 
-        private static string RowLeftOf(Selectable s)
+        private static string RowLeftOf(Component s)
         {
             try
             {
@@ -755,7 +802,7 @@ namespace NoExistenceA11y
                     Group g = Groups[_groupIndex];
                     for (int i = 0; i < g.Items.Count; i++)
                     {
-                        Selectable s = g.Items[i];
+                        Component s = g.Items[i];
                         string desc = "?";
                         try { desc = Describe(s); } catch (Exception e) { desc = "<Describe 抛异常: " + e.Message + ">"; }
                         sb.Append("\n  #").Append(i + 1).Append(' ').Append(desc)
@@ -793,7 +840,7 @@ namespace NoExistenceA11y
         }
 
         /// <summary>控件自己子树里的文本（最多 3 段）。没有则返回空串。</summary>
-        private static string OwnTextOf(Selectable s)
+        private static string OwnTextOf(Component s)
         {
             var parts = new List<string>();
             try
@@ -976,7 +1023,7 @@ namespace NoExistenceA11y
         }
 
         /// <summary>同一个「行」里的标签文本：从自己往上找，最多两层。</summary>
-        private static string RowTextOf(Selectable s)
+        private static string RowTextOf(Component s)
         {
             try
             {
@@ -995,7 +1042,7 @@ namespace NoExistenceA11y
         }
 
         /// <summary>别名命中的是不是控件自己（而不是某一级祖先行名）。</summary>
-        private static bool AliasOnSelf(Selectable s)
+        private static bool AliasOnSelf(Component s)
         {
             try
             {
@@ -1006,7 +1053,7 @@ namespace NoExistenceA11y
         }
 
         /// <summary>从自己往上（最多 4 层）找第一个命中中文别名表的祖先名。</summary>
-        private static string AliasAncestorOf(Selectable s)
+        private static string AliasAncestorOf(Component s)
         {
             try
             {
@@ -1042,7 +1089,7 @@ namespace NoExistenceA11y
         ///   2) 同一行的兄弟文本 → 用，并在前面补上所属行名（窗口分辨率、画面模式…）
         ///   3) 都没有 → 从自己往上找第一个有意思的名字，跳过样板名
         /// </summary>
-        private static string TextOf(Selectable s)
+        private static string TextOf(Component s)
         {
             string own = OwnTextOf(s);
             if (own.Length > 0) return own;
@@ -1069,7 +1116,7 @@ namespace NoExistenceA11y
         }
 
         /// <summary>兜底：从自己往上找第一个不是样板名的对象名。</summary>
-        private static string AncestorNameOf(Selectable s)
+        private static string AncestorNameOf(Component s)
         {
             try
             {
@@ -1153,7 +1200,7 @@ namespace NoExistenceA11y
             return Mathf.RoundToInt(sl.value) + " / " + Mathf.RoundToInt(sl.maxValue);
         }
 
-        private static string Describe(Selectable s)
+        private static string Describe(Component s)
         {
             var sb = new StringBuilder();
 
@@ -1175,9 +1222,9 @@ namespace NoExistenceA11y
             else if (t != null) sb.Append("，开关，").Append(t.isOn ? "开" : "关");
             else if (sl != null) sb.Append("，滑条，").Append(SliderValueText(sl));
             else if (As<Button>(s) != null) sb.Append("，按钮");
-            else sb.Append("，").Append(s.GetType().Name);
+            else sb.Append("，文字");
 
-            if (!s.interactable) sb.Append("，不可用");
+            var _sel = As<Selectable>(s); if (_sel != null && !_sel.interactable) sb.Append("，不可用");
             return sb.ToString();
         }
 
@@ -1194,7 +1241,7 @@ namespace NoExistenceA11y
         {
             if (!_active || Items.Count == 0) return;
             _index = Mathf.Clamp(_index, 0, Items.Count - 1);
-            Selectable s = Items[_index];
+            Component s = Items[_index];
             if (s == null) { ExitInternal(false); return; }
 
             _announcedItem = s;
@@ -1221,13 +1268,13 @@ namespace NoExistenceA11y
         // ================= 操作 =================
 
         /// <summary>当前选中项；导航模式未生效或该项已失效时返回 null。</summary>
-        private static Selectable CurrentItem()
+        private static Component CurrentItem()
         {
             if (!_active) return null;
             if (_groupIndex < 0 || _groupIndex >= Groups.Count) return null;
             if (Items.Count == 0) return null;
             int i = Mathf.Clamp(_index, 0, Items.Count - 1);
-            Selectable s = Items[i];
+            Component s = Items[i];
             return s == null ? null : s;   // Unity 伪空：已销毁对象在此拦下
         }
 
@@ -1290,11 +1337,11 @@ namespace NoExistenceA11y
         //   （手机菜单的「退出游戏」，游戏自己有确认框）。
         //   教训：这种判定别用词边界，也别用「包含」，直接拿实查到的名字比。
 
-        private static Selectable _pendingQuit;
+        private static Component _pendingQuit;
         private static float _pendingQuitAt;
         private const float QuitConfirmSeconds = 8f;
 
-        private static bool NeedsQuitConfirm(Selectable s)
+        private static bool NeedsQuitConfirm(Component s)
         {
             if (Plugin.CfgQuitConfirm == null || !Plugin.CfgQuitConfirm.Value) return false;
             try
@@ -1315,7 +1362,7 @@ namespace NoExistenceA11y
             catch { return false; }
         }
 
-        private static bool QuitConfirmArmed(Selectable s)
+        private static bool QuitConfirmArmed(Component s)
         {
             if (_pendingQuit == null) return false;
             if (Time.realtimeSinceStartup - _pendingQuitAt > QuitConfirmSeconds)
@@ -1326,7 +1373,7 @@ namespace NoExistenceA11y
             return _pendingQuit == s;
         }
 
-        private static void ArmQuitConfirm(Selectable s)
+        private static void ArmQuitConfirm(Component s)
         {
             _pendingQuit = s;
             _pendingQuitAt = Time.realtimeSinceStartup;
@@ -1345,20 +1392,29 @@ namespace NoExistenceA11y
             _pendingQuit = null;
         }
 
-        private static void Activate(Selectable s)
+        private static void Activate(Component item)
         {
-            if (s == null) { ExitInternal(false); return; }
+            if (item == null) { ExitInternal(false); return; }
+
+            // 纯文本项（回想面板里的台词）没有可点的东西：
+            // 回车就等于「再念一遍」，这也正是玩家想要的「重读上一句」。
+            if (As<Selectable>(item) == null)
+            {
+                Speech.Speak(TextOf(item), true);
+                return;
+            }
 
             // 留痕：崩溃排查用。原生崩溃不会在日志里留下任何异常，
             // 只有我们自己事前写下的这一行能指明最后碰的是哪个控件。
             try
             {
-                Plugin.L.LogInfo("[UiNav] 激活 " + s.GetType().Name + "「" + TextOf(s) + "」场景 "
+                Plugin.L.LogInfo("[UiNav] 激活 " + item.GetType().Name + "「" + TextOf(item) + "」场景 "
                     + SceneManager.GetActiveScene().name);
             }
             catch { }
 
-            if (!s.interactable)
+            var sel = As<Selectable>(item);
+            if (sel != null && !sel.interactable)
             {
                 Speech.Speak("该项当前不可用。", true);
                 return;
@@ -1366,7 +1422,7 @@ namespace NoExistenceA11y
 
             try
             {
-                TMP_InputField inf = As<TMP_InputField>(s);
+                TMP_InputField inf = As<TMP_InputField>(item);
                 if (inf != null)
                 {
                     // 先退出导航（ReleaseSelection 会清掉上一个高亮），
@@ -1378,7 +1434,7 @@ namespace NoExistenceA11y
                     return;
                 }
 
-                Toggle t = As<Toggle>(s);
+                Toggle t = As<Toggle>(item);
                 if (t != null)
                 {
                     t.isOn = !t.isOn;
@@ -1387,17 +1443,17 @@ namespace NoExistenceA11y
                     return;
                 }
 
-                Slider sl = As<Slider>(s);
+                Slider sl = As<Slider>(item);
                 if (sl != null)
                 {
                     Speech.Speak("滑条请用左右方向键调整。", true);
                     return;
                 }
 
-                Button b = As<Button>(s);
+                Button b = As<Button>(item);
                 if (b != null)
                 {
-                    string label = TextOf(s);
+                    string label = TextOf(item);
                     Speech.Speak("已激活 " + label, false);
                     _inOurActivation = true;
                     try { b.onClick.Invoke(); }
@@ -1411,7 +1467,7 @@ namespace NoExistenceA11y
                 _inOurActivation = true;
                 try
                 {
-                    ExecuteEvents.Execute(s.gameObject, new BaseEventData(EventSystem.current),
+                    ExecuteEvents.Execute(item.gameObject, new BaseEventData(EventSystem.current),
                         ExecuteEvents.submitHandler);
                 }
                 finally { _inOurActivation = false; }
@@ -1435,7 +1491,7 @@ namespace NoExistenceA11y
         }
 
         /// <summary>两份控件清单是不是一模一样（顺序也要一样）。</summary>
-        private static bool SameList(List<Selectable> a, List<Selectable> b)
+        private static bool SameList(List<Component> a, List<Component> b)
         {
             if (a == null || b == null) return false;
             if (a.Count != b.Count) return false;
@@ -1490,8 +1546,8 @@ namespace NoExistenceA11y
                 if (_active)
                 {
                     if (!SceneStable()) { ExitInternal(false); return; }
-                    Selectable before = _announcedItem;
-                    var beforeList = new List<Selectable>(Items);
+                    Component before = _announcedItem;
+                    var beforeList = new List<Component>(Items);
                     Scan();
                     if (Groups.Count == 0 || Items.Count == 0) { ExitInternal(false); return; }
                     _index = Mathf.Clamp(_index, 0, Items.Count - 1);
@@ -1505,7 +1561,7 @@ namespace NoExistenceA11y
                     // 那个按钮（序号也没变），但列表里多了新控件。只比当前项的话
                     // 就一声不吭，玩家以为界面没变。实测就是这样：按了 1/7 没有提示，
                     // 直到按 Esc 才听见「界面已更新」。
-                    Selectable now = CurrentItem();
+                    Component now = CurrentItem();
                     if (now != before || !SameList(beforeList, Items)) Announce("界面已更新。");
                 }
             }
@@ -1518,8 +1574,8 @@ namespace NoExistenceA11y
             // 当前项一旦失效就重扫一次；每个失效对象只请求一次，避免反复重扫。
             if (_active && _pendingRescanFrame < 0)
             {
-                Selectable cur = CurrentItem();
-                if (cur != null && !cur.isActiveAndEnabled && !ReferenceEquals(cur, _rescanRequestedFor))
+                Component cur = CurrentItem();
+                if (cur != null && (cur.gameObject == null || !cur.gameObject.activeInHierarchy) && !ReferenceEquals(cur, _rescanRequestedFor))
                 {
                     _rescanRequestedFor = cur;
                     RequestRescanNextFrame();
@@ -1537,7 +1593,7 @@ namespace NoExistenceA11y
             if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter)
                 || Input.GetKeyDown(KeyCode.Space))
             {
-                Selectable target = CurrentItem();
+                Component target = CurrentItem();
                 if (target != null)
                 {
                     _submitHandledFrame = Time.frameCount;

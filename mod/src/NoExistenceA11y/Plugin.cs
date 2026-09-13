@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text;
 using BepInEx;
@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.4";
+        public const string Version = "0.0.0.5";
 
         internal static ManualLogSource L;
 
@@ -50,6 +50,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgUiNav;
         internal static ConfigEntry<bool> CfgUiVisibleOnly;
         internal static ConfigEntry<bool> CfgUiSortByPosition;
+        internal static ConfigEntry<string> CfgUiTextWhitelist;
         internal static ConfigEntry<bool> CfgQuitConfirm;
         internal static ConfigEntry<string> CfgQuitNames;
         internal static ConfigEntry<string> CfgUiBlockedPaths;
@@ -165,6 +166,16 @@ namespace NoExistenceA11y
                 "关掉的话会把隐藏面板里的控件也扫进来，通常只会造成噪声。");
             CfgUiSortByPosition = Config.Bind("界面导航", "按屏幕位置排序", true,
                 "关掉则按渲染层级排序。默认按位置更符合直觉。");
+            CfgUiTextWhitelist = Config.Bind("界面导航", "可导航文字的界面", "BacklogUI",
+                "★ 逗号分隔的路径片段。命中这些界面时，**纯文本也会变成导航项**。\n" +
+                "\n" +
+                "用途：回想（History）面板里每条台词是一个纯文字，没有对应的控件，\n" +
+                "按原来的做法打开回想之后什么都读不到。\n" +
+                "纳入之后：方向键逐条翻、回车重念当前这条 ——\n" +
+                "「重读上一句」和「回想朗读」一次解决，而且用的是游戏本来就有的交互。\n" +
+                "\n" +
+                "按钮/开关自带的标签会自动跳过，不会重复念。\n" +
+                "留空可停用。");
             CfgQuitConfirm = Config.Bind("界面导航", "退出前二次确认", true,
                 "「退出游戏」只按一下就关掉整个会话，而读屏用户分不清它和旁边的按钮，所以补一道确认。");
             CfgQuitNames = Config.Bind("界面导航", "退出按钮对象名", "ExitButton,QuitGame,ExitGameButton,QuitButton",
