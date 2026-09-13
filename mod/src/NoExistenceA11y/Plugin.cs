@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Text;
 using BepInEx;
@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.3";
+        public const string Version = "0.0.0.4";
 
         internal static ManualLogSource L;
 
@@ -44,6 +44,7 @@ namespace NoExistenceA11y
         // ---- QTE ----
         internal static ConfigEntry<bool> CfgQteAutoPass;
         internal static ConfigEntry<string> CfgQteHotkey;
+        internal static ConfigEntry<float> CfgQteFallbackDelay;
 
         // ---- 界面导航（UiNav）----
         internal static ConfigEntry<bool> CfgUiNav;
@@ -146,6 +147,16 @@ namespace NoExistenceA11y
             CfgQteHotkey = Config.Bind("QTE", "开关热键", "F3",
                 "在游戏里切换「自动点击」的按键。切换时会念出当前状态。\n" +
                 "填 Unity 的 KeyCode 名，例如 F3 / F4 / BackQuote。");
+            CfgQteFallbackDelay = Config.Bind("QTE", "兜底延迟（秒）", 1.0f,
+                "★ 这就是实际生效的那个旋钮。\n" +
+                "\n" +
+                "修正值取决于点击时按钮的凝实程度：刚露头就点只有 50%，\n" +
+                "等按钮渐显到最实再点能到 97%。所以补丁会等一会儿再点。\n" +
+                "\n" +
+                "实测（v0.0.0.4 日志）：按钮的渐隐不是靠 CanvasGroup / Image.color.a 做的，\n" +
+                "补丁读不到 alpha 变化，所以「按峰值点」那条路 100 次里只触发了 1 次 ——\n" +
+                "真正起作用的就是这个延迟。\n" +
+                "1.0 秒 = 97%。想冲 100% 可以试 1.2~1.5，但调太大有漏点的风险。");
 
             CfgUiNav = Config.Bind("界面导航", "启用键盘导航", true,
                 "按 Tab 进入/退出导航模式，方向键选项，回车/空格激活。\n" +
