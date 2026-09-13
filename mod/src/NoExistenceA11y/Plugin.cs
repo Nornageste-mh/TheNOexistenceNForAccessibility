@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.1";
+        public const string Version = "0.0.0.2";
 
         internal static ManualLogSource L;
 
@@ -41,6 +41,7 @@ namespace NoExistenceA11y
 
         // ---- QTE ----
         internal static ConfigEntry<bool> CfgQteAutoPass;
+        internal static ConfigEntry<string> CfgQteHotkey;
 
         // ---- 界面导航（UiNav）----
         internal static ConfigEntry<bool> CfgUiNav;
@@ -117,10 +118,19 @@ namespace NoExistenceA11y
             CfgChoiceHotkeys = Config.Bind("选项框", "数字键直选", true,
                 "选项出现时按 1-9 直接选中对应项，不必用鼠标、也不必先按 Tab。");
 
-            CfgQteAutoPass = Config.Bind("QTE", "自动通过", true,
-                "烤箱那段 QTE 是纯视觉反应按键（无节奏音、按钮自行出现消失），\n" +
-                "而且得分低于 60% 会无限重来。对盲人玩家来说没有可玩的通道，\n" +
-                "所以默认自动点掉每一个出现的按钮，保证满分通过、剧情继续。");
+            CfgQteAutoPass = Config.Bind("QTE", "自动点击", true,
+                "烤箱那段的 QTE 是纯视觉反应按键：按钮散落在屏幕上、超时就消失，\n" +
+                "正确选项加「修正值」、错误选项点了无事发生，低于阈值要重来。\n" +
+                "画面上没有任何可听的线索，盲人玩家没有可玩的通道。\n" +
+                "\n" +
+                "这个功能不可能让局面变坏：错误选项没有扣分，所以「把出现的按钮\n" +
+                "都点一遍」在结果上严格优于「什么都不点」。采集范围也严格限制在\n" +
+                "QTE 面板子树内，不会误碰别处的按钮。\n" +
+                "\n" +
+                "游戏里随时可以按下面的热键开关它。");
+            CfgQteHotkey = Config.Bind("QTE", "开关热键", "F3",
+                "在游戏里切换「自动点击」的按键。切换时会念出当前状态。\n" +
+                "填 Unity 的 KeyCode 名，例如 F3 / F4 / BackQuote。");
 
             CfgUiNav = Config.Bind("界面导航", "启用键盘导航", true,
                 "按 Tab 进入/退出导航模式，方向键选项，回车/空格激活。\n" +
@@ -141,6 +151,9 @@ namespace NoExistenceA11y
                 "     按下去会绕开正常流程把游戏扔进裸剧本，结果是黑屏+有音乐+无任何响应，\n" +
                 "     只能 Alt+F4。这不是游戏的问题，是我们不该让它可点。\n" +
                 "  ExternalScriptsBrowser / DebugInfoGUI / CustomVariableGUI —— 同类调试面板。");
+
+            // QTE 自动点击的运行时开关：初值取自配置，游戏里可用热键随时切换
+            Qte.AutoOn = CfgQteAutoPass.Value;
 
             DiagPath = Path.Combine(Paths.BepInExRootPath, "noexistence_a11y.log");
             try
