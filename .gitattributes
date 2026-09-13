@@ -1,0 +1,16 @@
+# 统一换行符，避免每次 add 都刷一屏 LF/CRLF 警告。
+# 注意：.ps1 必须是「UTF-8 with BOM」—— Windows PowerShell 5.1 对没有 BOM 的
+# 脚本按系统代码页(GBK)读取，带中文的脚本会直接解析失败。git 不会动 BOM。
+* text=auto
+
+*.cs      text eol=lf
+*.csproj  text eol=crlf
+*.sln     text eol=crlf
+*.ps1     text eol=crlf
+*.md      text eol=lf
+*.py      text eol=lf
+
+*.png     binary
+*.dll     binary
+*.zip     binary
+*.glb     binary
