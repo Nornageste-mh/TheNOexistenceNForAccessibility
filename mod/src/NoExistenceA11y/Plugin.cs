@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text;
 using BepInEx;
@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.0.0.2";
+        public const string Version = "0.0.0.3";
 
         internal static ManualLogSource L;
 
@@ -34,6 +34,8 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgDiag;
         internal static ConfigEntry<bool> CfgAutoStart;
         internal static ConfigEntry<bool> CfgAutoPlay;
+        internal static ConfigEntry<string> CfgJumpScript;
+        internal static ConfigEntry<string> CfgJumpHotkey;
 
         // ---- 选项框 ----
         internal static ConfigEntry<bool> CfgReadChoices;
@@ -111,6 +113,19 @@ namespace NoExistenceA11y
                 "测试用：引擎就绪后自动点掉标题画面的 START，省得人手点。正式游玩保持关闭。");
             CfgAutoPlay = Config.Bind("诊断", "自动推进剧情", false,
                 "测试用：开启 Naninovel 自动播放，让剧情自己往下走，不依赖任何模拟点击。正式游玩保持关闭。");
+            CfgJumpScript = Config.Bind("诊断", "跳转脚本", "Prologue1_6",
+                "★ 诊断功能。在游戏里按下面的热键，直接跳到这个剧本的**开头**播放。\n" +
+                "用途：QTE 在第一章末尾，进度过了就够不着，没法回头验证功能。\n" +
+                "从开头播 = 脚本自己的立绘装配命令都会执行，不会出现分层错乱。\n" +
+                "跳过去之后按住 Ctrl（Naninovel 的跳过键）可以几秒冲到目标位置。\n" +
+                "\n" +
+                "烤箱 QTE 可能在 Prologue1_6，也可能在 Prologue1_1（烤蛋糕那章），\n" +
+                "两个都试一下。填别的剧本名也行，比如 Prologue2_1。\n" +
+                "\n" +
+                "⚠️ 会打乱正常流程，而且游戏会自动存档。用之前先备份 Saves 目录。");
+            CfgJumpHotkey = Config.Bind("诊断", "跳转热键", "F4",
+                "触发上面那个跳转的按键。填 Unity 的 KeyCode 名，例如 F4 / F5 / BackQuote。\n" +
+                "留空可停用。");
 
             CfgReadChoices = Config.Bind("选项框", "朗读选项", true,
                 "主角的全部台词都在选项框里（全剧 ≥625 条），所以这块不是可选项。\n" +
@@ -382,6 +397,7 @@ namespace NoExistenceA11y
             }
             try { Choices.Update(); } catch (Exception e) { Plugin.Diag("Choices: " + e.Message); }
             try { Qte.Update(); } catch (Exception e) { Plugin.Diag("Qte: " + e.Message); }
+            try { Diag.Update(); } catch (Exception e) { Plugin.Diag("Diag: " + e.Message); }
 
             if (!_speechInited)
             {
