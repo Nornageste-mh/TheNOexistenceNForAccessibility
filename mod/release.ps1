@@ -99,8 +99,29 @@ Write-Host ""
 Write-Host "=== 4. zip ==="
 New-Item -ItemType Directory -Force -Path $OUT | Out-Null
 $zip = Join-Path $OUT ("NoExistenceA11y-" + $ver + ".zip")
-Remove-Item $zip -ErrorAction SilentlyContinue
-Compress-Archive -Path (Join-Path $REL '*') -DestinationPath $zip -Force
-$f = Get-Item $zip
+
+# Do NOT use Compress-Archive here. On Windows PowerShell 5.1 it delegates to
+# .NET Framework's ZipFile.CreateFromDirectory, which builds entry names with
+# Path.DirectorySeparatorChar -- so every entry is stored as "BepInEx\core\x.dll".
+# The ZIP spec requires '/', and while Windows Explorer, 7-Zip and even Windows
+# Python tolerate the backslash, Linux/macOS unzip does not: it extracts a pile
+# of flat files whose names contain literal backslashes.
+# tools\makezip.ps1 builds the entries by hand so the separator is always '/'.
+$zipTool = Join-Path $MOD 'tools\makezip.ps1'
+if (-not (Test-Path $zipTool)) { Write-Host "    !! tools\makezip.ps1 not found" -ForegroundColor Red; exit 1 }
+& $zipTool -Source $REL -Zip $zip
+if (-not (Test-Path $zip)) { Write-Host "    !! zip not created" -ForegroundColor Red; exit 1 }
+
+# Self-check: no entry may use a backslash separator.
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$za = [System.IO.Compression.ZipFile]::OpenRead($zip)
+$total = $za.Entries.Count
+$bad = @($za.Entries | Where-Object { $_.FullName -like '*\*' }).Count
+$za.Dispose()
 Write-Host ("    " + $zip)
-Write-Host ("    " + [Math]::Round($f.Length / 1MB, 1) + " MB")
+Write-Host ("    " + [Math]::Round((Get-Item $zip).Length / 1MB, 1) + " MB, " + $total + " entries")
+if ($bad -gt 0) {
+  Write-Host ("    !! " + $bad + " entries use backslash separators") -ForegroundColor Red
+  exit 1
+}
