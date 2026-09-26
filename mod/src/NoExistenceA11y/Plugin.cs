@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.1.0.0";
+        public const string Version = "0.1.1.0";
 
         internal static ManualLogSource L;
 
@@ -30,6 +30,8 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgAnnounceOnVoiced;
         internal static ConfigEntry<bool> CfgReadTrivial;
         internal static ConfigEntry<bool> CfgRequirePrintEvent;
+        internal static ConfigEntry<string> CfgDirectTextPaths;
+        internal static ConfigEntry<bool> CfgReadSubtitles;
         internal static ConfigEntry<string> CfgSpeechBackend;
         internal static ConfigEntry<string> CfgRepeatKey;
         internal static ConfigEntry<bool> CfgSpeechInterrupt;
@@ -42,6 +44,9 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgAutoPlay;
         internal static ConfigEntry<string> CfgJumpScript;
         internal static ConfigEntry<string> CfgJumpHotkey;
+        internal static ConfigEntry<int> CfgJumpLine;
+        internal static ConfigEntry<bool> CfgDumpScript;
+        internal static ConfigEntry<bool> CfgAutoJump;
 
         // ---- 选项框 ----
         internal static ConfigEntry<bool> CfgReadChoices;
@@ -115,6 +120,25 @@ namespace NoExistenceA11y
                 "（载入存档 / 加载场景 / 预载剧本都会）。只挂 set_Text 的话，\n" +
                 "这些玩家根本看不到的文本会被念出来 —— 实测在 load 场景念出过结局文本。\n" +
                 "开启后只朗读同时收到「开始打印」事件的行。");
+            CfgDirectTextPaths = Config.Bind("朗读", "不经过打印器也朗读的面板", "SettingsUI",
+                "★ 逗号分隔的路径片段。命中这些面板的文本，**没有「开始打印」事件也朗读**。\n" +
+                "\n" +
+                "为什么需要这条：本作有一部分正文不是走对话打印器的 ——\n" +
+                "设置界面里那些随光标变化的解说文字就是直接写进一个 RevealableText 的，\n" +
+                "Naninovel 的 OnPrintTextStarted 根本不会触发。只挂打印事件的话，\n" +
+                "这些字会被上面那道剧透闸门一律拦掉：实测在设置界面里\n" +
+                "「欢迎来到——莉莉丝的设置界面~」这类文字被静默丢弃（日志：REVEAL 拦下）。\n" +
+                "\n" +
+                "放行的前提仍然是**面板此刻确实可见**（第二道闸门照旧生效），\n" +
+                "所以「藏在隐藏面板里的预载文本」这条老路堵着，不构成剧透风险。\n" +
+                "留空可停用。");
+            CfgReadSubtitles = Config.Bind("朗读", "朗读字幕", true,
+                "剧本里的 `@subtitle` 字幕（片尾 / 唱歌 / 伪 ED）。\n" +
+                "\n" +
+                "★ 这条**不是**走对话打印器的：SubtitleUI 播一段 Animation，\n" +
+                "文字写在预制体里的 TMP 节点上。只挂打印器的话这段一个字都不念 ——\n" +
+                "玩家报告的就是「第四章结尾的字幕不可读」。\n" +
+                "开启后：字幕按画面节奏念，滚进可见区的每一行念一次。");
             CfgSpeechBackend = Config.Bind("朗读", "语音后端", "自动",
                 "自动 / NVDA / Tolk / SAPI。填具体值可强制只用那一个（排查用）。");
             CfgRepeatKey = Config.Bind("朗读", "重读键", "Backspace",
@@ -172,6 +196,29 @@ namespace NoExistenceA11y
                 "两个都试一下。填别的剧本名也行，比如 Prologue2_1。\n" +
                 "\n" +
                 "⚠️ 会打乱正常流程，而且游戏会自动存档。用之前先备份 Saves 目录。");
+            CfgAutoJump = Config.Bind("诊断", "自动跳转", false,
+                "★ 诊断功能。打开后，引擎就绪（并且「自动开始游戏」跑过）之后\n" +
+                "**自动**执行一次「跳转脚本 / 跳转位置」，不需要按热键。\n" +
+                "\n" +
+                "用途：自动化排查某一段剧情（例如某章结尾的字幕、某个 QTE）。\n" +
+                "模拟按键在有些环境下送不进游戏（游戏窗口抢不到前台），这条路不依赖任何按键。\n" +
+                "和「跳转脚本」一样会打乱正常流程，正式游玩保持关闭。");
+            CfgDumpScript = Config.Bind("诊断", "转储剧本行表", false,
+                "★ 诊断功能。打开后，每次按「跳转热键」都会把该剧本的**行表**写进\n" +
+                "BepInEx\\noexistence_a11y.log：第几行、什么类型、标签/命令名、行哈希与原文。\n" +
+                "\n" +
+                "为什么需要它：这个引擎按**行号**跳转，而剧本里哪一段在第几行光看文件看不出来 ——\n" +
+                "当初为了跳到一个 QTE 段落，试了很久。有了行表就能直接查到行号填进「跳转位置」。\n" +
+                "只写日志、不改游戏状态，默认关闭。");
+            CfgJumpLine = Config.Bind("诊断", "跳转位置", 0,
+                "★ 从剧本的**第几行**开始播（0 = 从开头，默认）。\n" +
+                "\n" +
+                "为什么默认是 0：从开头播时，脚本自己的 @char / @modifyCharacter\n" +
+                "立绘装配命令都会执行；从中间起播会**跳过**这些命令，\n" +
+                "实测角色立绘直接错乱（当初的玩家原话是「拼图错误」）。\n" +
+                "\n" +
+                "所以只在排查某一段剧情（例如某章结尾的字幕）时临时调大，\n" +
+                "用完记得改回 0。配合「跳转热键」使用，两个都要填。");
             CfgJumpHotkey = Config.Bind("诊断", "跳转热键", "",
                 "触发上面那个跳转的按键。填 Unity 的 KeyCode 名，例如 F4 / F5 / BackQuote。\n" +
                 "留空可停用。");
@@ -377,6 +424,30 @@ namespace NoExistenceA11y
             catch { }
         }
 
+        /// <summary>
+        /// 某个文本面板是否落在配置的「不经过打印器也朗读」白名单里。
+        /// 与导航那份白名单同一套口径：逗号分隔、按**层级路径片段**匹配、大小写不敏感。
+        /// </summary>
+        private static bool PathListHit(UnityEngine.Transform t, ConfigEntry<string> cfg)
+        {
+            try
+            {
+                if (t == null || cfg == null || string.IsNullOrEmpty(cfg.Value)) return false;
+                string path = UiNav.PathOf(t);
+                if (string.IsNullOrEmpty(path)) return false;
+
+                string[] frags = cfg.Value.Split(',');
+                for (int i = 0; i < frags.Length; i++)
+                {
+                    string frag = frags[i].Trim();
+                    if (frag.Length > 0 && path.IndexOf(frag, StringComparison.OrdinalIgnoreCase) >= 0)
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
         private static string Short(string s)
         {
             if (s == null) return "-";
@@ -514,9 +585,16 @@ namespace NoExistenceA11y
             //
             // 唯一的权威信号是 OnPrintTextStarted：它只在真正开始打印一行时触发。
             // 没有它陪同的 set_Text，一律不念。
-            if (!fresh && (CfgRequirePrintEvent == null || CfgRequirePrintEvent.Value))
+            // 例外：本作有一部分正文根本不经过打印器（设置界面里随光标变化的解说文字、
+            // 彩蛋界面那些），它们只有 set_Text、没有 OnPrintTextStarted。
+            // 对这些面板放行 —— 但**可见性**那道闸门照旧要过，所以隐藏面板里的预载文本
+            // 依旧念不出来，剧透防护没有放松。
+            bool direct = PathListHit(inst != null ? inst.transform : null, CfgDirectTextPaths);
+
+            if (!fresh && !direct && (CfgRequirePrintEvent == null || CfgRequirePrintEvent.Value))
             {
-                Diag("REVEAL 拦下（没有打印事件，不是正在显示的行）  " + Short(speech));
+                Diag("REVEAL 拦下（没有打印事件，不是正在显示的行）  "
+                    + (inst != null ? UiNav.PathOf(inst.transform) : "?") + "  " + Short(speech));
                 return;
             }
 
@@ -534,8 +612,11 @@ namespace NoExistenceA11y
             bool voiced = key != null && VoiceLineIds.Voiced.Contains(key);
             string name = SpeakerNames.Resolve(author);
 
-            Diag(string.Format("REVEAL fresh={0} printer={1} author={2} name={3} key={4} voiced={5} text={6}",
-                fresh, printer ?? "-", author ?? "(空)", name ?? "-", key ?? "-", voiced, Short(speech)));
+            // 面板路径也记上：排查「长台词被截」时要能看出这一句属于哪个面板、
+            // 以及同一个面板上前后两次写入到底写了什么。
+            Diag(string.Format("REVEAL fresh={0} printer={1} author={2} name={3} key={4} voiced={5} panel={6} path={7} text={8}",
+                fresh, printer ?? "-", author ?? "(空)", name ?? "-", key ?? "-", voiced, panelId,
+                inst != null ? UiNav.PathOf(inst.transform) : "?", Short(speech)));
 
             if (p != null) Current = null;   // 一行只消费一次
 
@@ -584,6 +665,7 @@ namespace NoExistenceA11y
                 try { UiNav.Update(); } catch (Exception e) { Plugin.Diag("UiNav: " + e.Message); }
             }
             try { Choices.Update(); } catch (Exception e) { Plugin.Diag("Choices: " + e.Message); }
+            try { Subtitles.Update(); } catch (Exception e) { Plugin.Diag("Subtitles: " + e.Message); }
             try { Plugin.CheckRepeatHotkey(); } catch (Exception e) { Plugin.Diag("Repeat: " + e.Message); }
             try { Plugin.CheckSilenceHotkey(); } catch (Exception e) { Plugin.Diag("Silence: " + e.Message); }
             try { LoadingWatch.Update(); } catch (Exception e) { Plugin.Diag("Loading: " + e.Message); }
@@ -634,6 +716,17 @@ namespace NoExistenceA11y
                     TryAutoStart();
             }
 
+            // 诊断用：引擎就绪后自动跳一次剧本（不依赖按键注入）
+            if (_subscribed && !_autoJumpTried && _ticks - _subscribedAt > 700)
+            {
+                _autoJumpTried = true;
+                if (Plugin.CfgAutoJump != null && Plugin.CfgAutoJump.Value)
+                {
+                    try { Diag.PerformJump(); }
+                    catch (Exception e) { Plugin.Diag("自动跳转失败: " + e.Message); }
+                }
+            }
+
             // 测试用：让剧情自己走，不依赖模拟点击（模拟点击会被 Windows 的前台窗口锁拦住）
             if (_subscribed && !_autoPlayOn && _ticks - _subscribedAt > 400
                 && (Plugin.TestMode || (Plugin.CfgAutoPlay != null && Plugin.CfgAutoPlay.Value)))
@@ -654,6 +747,7 @@ namespace NoExistenceA11y
         }
 
         private bool _autoPlayOn;
+        private bool _autoJumpTried;
 
         private int _subscribedAt;
         private bool _autoStartTried;

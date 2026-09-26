@@ -190,8 +190,14 @@ licenses\                   ← 新增（第三方组件的许可证与声明，
   或 `Image.color.a` 做的，补丁读不到 alpha 变化，97% 完全来自"等 1 秒再点"
 - 未覆盖的内容：CG / Spine 画面口述、视频口述影像、未配音台词的 TTS 预生成、
   游戏原生历史回顾面板的朗读（改用导航模式的 `BacklogUI` 白名单实现）
-- 终章与 ED 字幕**尚未实机验证**（走的是与对话相同的打印器路径，风险低）；
-  `0.1.0.0` 新加的加载播报打断行为、`0` 沉默键、控制台隐藏也还没实机跑过
+- **字幕（`@subtitle`）走的不是打印器**（`0.1.1.0` 前压根没接上，见 CHANGELOG）。
+  本作的片尾 / 唱歌 / 伪 ED 字幕是 `SubtitleUI` 播一段 Animation，
+  文字写在预制体的 TMP 节点上、没有任何打印事件，所以补丁原来**一个字都不念**。
+  现在由 `Subtitles.cs` 按画面节奏逐行朗读；终章与 ED 字幕**仍未实机跑完整遍**
+- **设置界面里"整屏控件都不可用"时改为只读导航。** 例如彩蛋界面「莉莉丝的设置界面」：
+  游戏把全部控件置成 `interactable = false`，补丁以前会报「没有可操作的项目」、
+  还顺手退出导航模式。现在会把它们**当只读项念出来**（只念不点，按回车只会听到
+  「该项当前不可用」），并在进入时先说一句「这一屏的控件当前都不可用」
 - 语音朗读依赖所选后端（NVDA / Tolk / SAPI），用 SAPI 兜底时系统里要有中文语音
 
 ---
@@ -288,6 +294,9 @@ MD5 都是 `EE5E955912E72D2E83F8E076B10BEFFF`；
 | 说话人名 | `SpeakerNames.cs`，取自游戏 `CharacterNames` 文档 |
 | QTE 自动点击 | `FindObjectOfType<Naninovel.UI.QTEUI>()`（按类型，不猜对象名） |
 | 界面键盘导航 | 无挂载点，`UiNav` 逐帧扫描 `Selectable`；白名单界面里连 `TMP_Text` 一起收 |
+| 朗读字幕（`@subtitle`） | 无挂载点：逐帧读 `SubtitleUI` 下**此刻在画面内**的 TMP 文字 |
+| 朗读不经过打印器的正文 | 无挂载点：配置「不经过打印器也朗读的面板」，按层级路径放行 |
+| 「整屏控件都不可用」时仍可听 | 无挂载点：`UiNav` 只读兜底（只念不点） |
 | 加载播报 | `Naninovel.UI.LoadingPanel` 可见性 + 名字带 `load` 的 Unity 场景 |
 | 导航时屏蔽游戏输入 | `Naninovel.IInputManager.ProcessInput`（引擎自带的总闸，可逆） |
 | 隐藏黑色控制台 | `GetConsoleWindow` + `ShowWindow`（运行时，不动 `BepInEx.cfg`） |
@@ -306,6 +315,18 @@ MD5 都是 `EE5E955912E72D2E83F8E076B10BEFFF`；
   识别到（`QTE` 行数始终为 0）、却什么都不说。改成引用游戏自己的类型，用
   `FindObjectOfType` 定位。类型引用是惰性解析的：游戏改版删掉该类只会让这一个功能
   停用并记一行日志，不会拖垮整个插件。
+
+同类的还有两条（`0.1.1.0` 查字幕时踩到的）：
+
+- **代理对象上的 `GetType()` 只会报"声明类型"。** 想把剧本行表印出来，
+  写 `c.GetType().Name` 得到的是**声明类型** `Command`（行则是 `ScriptLine`），
+  所有 `@PrintText` / `@CustomSubtitle` 全变成同一个名字，等于什么都没说。
+  要拿真实类名得直接问 IL2CPP：
+  `IL2CPP.il2cpp_object_get_class(ptr)` + `IL2CPP.il2cpp_class_get_name_(cls)`。
+- **`Script.Lines` 是 Il2Cpp 的 `IReadOnlyList` 代理，`.Count` 和 `foreach` 都点不出来**
+  （接口代理上只暴露了那一个接口自己的成员，编译期就报 CS1061 / CS1579）。
+  取行表要直接用内部的 `lines` 数组（`Il2CppReferenceArray<ScriptLine>`），
+  它有 `Length` 也有索引器，行号就是下标。
 
 另外几条：
 

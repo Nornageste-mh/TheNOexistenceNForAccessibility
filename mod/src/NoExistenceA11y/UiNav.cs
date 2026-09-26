@@ -88,6 +88,13 @@ namespace NoExistenceA11y
             public int SiblingIndex;
             public readonly List<Component> Items = new List<Component>();
 
+            /// <summary>
+            /// 游戏自己判定「此刻不可用」（interactable = false）的控件。
+            /// 平时不进导航；只有当这一组一个可用控件都不剩时才按「只读」纳入
+            /// （见 Scan 里的兜底），念得出来、但**永远不激活**。
+            /// </summary>
+            public readonly List<Component> ReadOnly = new List<Component>();
+
             // 本组所在 Canvas 的世界矩形与相机：用来判断成员是不是真的在画面上
             public Rect CanvasRect;
             public bool HasCanvasRect;
@@ -108,6 +115,13 @@ namespace NoExistenceA11y
             try { return ((Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase)o).TryCast<T>(); }
             catch { return null; }
         }
+        /// <summary>取 Transform 上的 RectTransform。IL2CPP 下 `is`/`as` 恒为假，必须 TryCast（见 As<T>）。</summary>
+        internal static RectTransform AsRect(Transform t)
+        {
+            if (t == null) return null;
+            try { return As<RectTransform>(t); } catch { return null; }
+        }
+
         private static readonly List<Group> Groups = new List<Group>();
         private static int _groupIndex;
         private static List<Component> Items { get { return Groups[_groupIndex].Items; } }
@@ -371,12 +385,22 @@ namespace NoExistenceA11y
                     //   只能 Alt+F4。这不是游戏的问题，是我们不该把它扫进来。
                     if (Blocked(s.transform, diag ? excluded : null)) { blockedCount++; continue; }
 
-                    // 游戏自己判定为「此刻不可用」的控件也不要给人按
+                    // 游戏自己判定为「此刻不可用」的控件**不给人按**
                     // （实测：按下去会让游戏进到不该进的状态）。
-                    if (!s.interactable) { notInteractable++; continue; }
+                    //
+                    // 但不再直接丢掉，而是先放进本组的「只读」篮子：可见性判定跑完之后，
+                    // 如果这一组一个可用控件都不剩，就把它们作为**只读**导航项收进来 ——
+                    // 只念，永远不激活（Activate 见到不可用一律只报「该项当前不可用」）。
+                    // 本作的彩蛋设置界面（莉莉丝的设置界面）整屏都是这种控件，详见下面兜底处。
+                    bool usable = s.interactable;
+                    if (!usable) notInteractable++;
 
                     Group g = GroupOf(s);
-                    if (g != null) g.Items.Add(s);
+                    if (g != null)
+                    {
+                        if (usable) g.Items.Add(s);
+                        else g.ReadOnly.Add(s);
+                    }
                     else if (diag && noCanvas < 10)
                     {
                         excluded.Add("[不在 Canvas 下] " + PathOf(s.transform));
@@ -463,13 +487,37 @@ namespace NoExistenceA11y
                 if (strict && removedByVisibility > 0)
                     DiagScan("严格可见性判定筛掉了 " + removedByVisibility + " 个控件（不做兜底，避免暴露隐藏面板）");
 
+                // ★ 「整屏控件都不可用」的**只读**兜底（与上面删掉的「自愈兜底」不是一回事）。
+                //
+                // 本作的彩蛋设置界面（莉莉丝的设置界面）里，游戏把**全部**控件置成
+                // interactable = false。实测日志（作者机器，2026-09-26）：
+                //     不可用=14   被可见性筛掉=58   最终纳入=0
+                // 于是这一屏在导航里变成「什么都没有」：读屏玩家既听不到屏幕上有什么，
+                // 也不知道自己为什么卡住 —— 玩家报告原话是「设置界面不可用」。
+                //
+                // 兜底只做两件不越界的事：
+                //   · 只收**可见**的控件（可见性判定照旧跑过一遍，隐藏面板一个都进不来）
+                //   · 只收进导航，**永远不激活**（Activate 对不可用控件只报「该项当前不可用」）
+                // 也就是把「看得见但点不动」变成「听得见但点不动」，
+                // 没有让任何本来点不到的东西变得可点。可用控件还剩一个的组，照旧只收可用的。
+                int readOnlyKept = 0;
+                for (int i = 0; i < Groups.Count; i++)
+                {
+                    Group g = Groups[i];
+                    if (g.Items.Count > 0 || g.ReadOnly.Count == 0) continue;
+                    g.Items.AddRange(g.ReadOnly);
+                    readOnlyKept += g.Items.Count;
+                }
+                if (readOnlyKept > 0)
+                    DiagScan("这一屏没有可用控件，按「只读」纳入 " + readOnlyKept + " 个（念得出、点不动）");
+
                 if (Plugin.L != null)
                 {
                     int kept = 0;
                     for (int i = 0; i < Groups.Count; i++) kept += Groups[i].Items.Count;
                     Plugin.L.LogInfo(string.Format(
-                        "[UiNav] Selectable 总数={0} 未激活={1} 不在Canvas下={2} 开发者面板排除={3} 不可用={4} 被可见性筛掉={5} 最终纳入={6}",
-                        all.Length, inactive, noCanvas, blockedCount, notInteractable, removedByVisibility, kept));
+                        "[UiNav] Selectable 总数={0} 未激活={1} 不在Canvas下={2} 开发者面板排除={3} 不可用={4} 被可见性筛掉={5} 最终纳入={6}（其中只读 {7}）",
+                        all.Length, inactive, noCanvas, blockedCount, notInteractable, removedByVisibility, kept, readOnlyKept));
                 }
 
                 // 组排序：Canvas 层级高的、兄弟序号靠后的（在更上层）排前面
@@ -545,8 +593,57 @@ namespace NoExistenceA11y
 
         /// <summary>转到统一的可见性判定（见 UiVis.cs）。</summary>
         private static bool HiddenByCanvasGroup(Transform t)
+
         {
             return UiVis.Hidden(t);
+        }
+
+        /// <summary>
+        /// **只按 alpha** 判「看不看得见」：沿父链只要有 CanvasGroup.alpha ≈ 0 就算看不见。
+        ///
+        /// 为什么单独要这条：UiVis.Hidden 把 `interactable = false` / `blocksRaycasts = false`
+        /// 也算成"隐藏"，那对**朗读**是对的（别念隐藏面板里的字），
+        /// 但对**导航**太粗 —— 本作的彩蛋设置界面就是 `alpha = 1` 正常显示、
+        /// 而 `interactable = false` 点不动（实测：那一屏 不可用=14）。
+        /// 两者混在一起判，结果是"看得见但点不动"被当成"看不见"直接丢掉了。
+        /// </summary>
+        private static bool AlphaHidden(Transform t)
+        {
+            if (t == null) return false;
+            try
+            {
+                Transform cur = t;
+                int guard = 0;
+                while (cur != null && guard++ < 40)
+                {
+                    CanvasGroup cg = null;
+                    try { cg = cur.GetComponent<CanvasGroup>(); } catch { }
+                    if (cg != null && cg.alpha < 0.01f) return true;
+                    cur = cur.parent;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// **只按矩形**判「在不在画面里」：控件矩形要和所在 Canvas 的矩形相交。
+        /// 不看射线、不看 interactable —— 用于「看得见但点不动」这一类只读项。
+        /// </summary>
+        private static bool OnScreenOnly(Component s, Group g)
+        {
+            try
+            {
+                RectTransform rt = As<RectTransform>(s.transform);
+                if (rt == null) return true;      // 判不出来就不排除
+                if (!g.HasCanvasRect) return true;
+
+                Rect r = WorldRect(rt);
+                if (r.xMax < g.CanvasRect.xMin - 2f || r.xMin > g.CanvasRect.xMax + 2f) return false;
+                if (r.yMax < g.CanvasRect.yMin - 2f || r.yMin > g.CanvasRect.yMax + 2f) return false;
+                return true;
+            }
+            catch { return true; }
         }
 
         /// <summary>把「画面上点不到」的控件从各组里剔掉，并统计剔掉了几个。</summary>
@@ -555,22 +652,43 @@ namespace NoExistenceA11y
             for (int i = 0; i < Groups.Count; i++)
             {
                 Group g = Groups[i];
-                int n = 0;
-                g.Items.RemoveAll(s =>
-                {
-                    bool ok;
-                    // 判定本身抛异常时按「可见」处理 —— 宁可多念一个，也不要整组消失
-                    try { ok = VisiblyClickable(s, g); } catch { ok = true; }
-                    if (!ok)
-                    {
-                        n++;
-                        if (record && excluded != null && excluded.Count < 60)
-                            excluded.Add("[画面外或点不到] " + PathOf(s.transform));
-                    }
-                    return !ok;
-                });
-                removed += n;
+                // 「能按的」照旧要过全部三档（能看到 + 能点到）
+                FilterList(g, g.Items, record, excluded, ref removed, false);
+                // 「只读」那一篮子放宽：只要**看得见**（alpha > 0）且在画面矩形里就留着 ——
+                // 它们本来就点不动（interactable = false），要求"能点到"等于自相矛盾。
+                // 这一篮子只有在整组没有可用控件时才会被启用，且永远不激活。
+                FilterList(g, g.ReadOnly, record, excluded, ref removed, true);
             }
+        }
+
+        /// <summary>
+        /// 两份清单的过滤。readOnlyBucket = true 时用放宽口径
+        /// （只看 alpha 与矩形；「点不点得动」对只读项没有意义）。
+        /// </summary>
+        private static void FilterList(Group g, List<Component> items, bool record, List<string> excluded,
+            ref int removed, bool readOnlyBucket)
+        {
+            int n = 0;
+            items.RemoveAll(s =>
+            {
+                bool ok;
+                // 判定本身抛异常时按「可见」处理 —— 宁可多念一个，也不要整组消失
+                try
+                {
+                    ok = readOnlyBucket
+                        ? (!AlphaHidden(s.transform) && OnScreenOnly(s, g))
+                        : VisiblyClickable(s, g);
+                }
+                catch { ok = true; }
+                if (!ok)
+                {
+                    n++;
+                    if (record && excluded != null && excluded.Count < 60)
+                        excluded.Add((readOnlyBucket ? "[只读项也看不见] " : "[画面外或点不到] ") + PathOf(s.transform));
+                }
+                return !ok;
+            });
+            removed += n;
         }
 
         /// <summary>取该控件在 Canvas 下的顶层祖先作为分组依据。</summary>
@@ -812,7 +930,7 @@ namespace NoExistenceA11y
         // ================= 诊断（配置「界面诊断日志」打开时才输出）=================
 
         /// <summary>控件在层级里的路径，形如 Canvas/Panel/Confirm/Yes。</summary>
-        private static string PathOf(Transform t)
+        internal static string PathOf(Transform t)
         {
             try
             {
@@ -974,53 +1092,46 @@ namespace NoExistenceA11y
         }
 
         /// <summary>
-        /// 设置面板里那些「美术字标签」的对象名 → 中文。
+        /// 「美术字标签」的对象名 → 中文。
         ///
-        /// 游戏的设置面板把行名和页签名**画成了图片**，TMP 里没有对应文字，
-        /// 所以只能退回对象名 —— 而对象名是 ControlButton、General 这种。
-        /// 这里按对象名给出中文。每一条都要有依据，不要凭感觉往里加：
-        ///   - 三个页签：游戏自带本地化表里有 config.tab.general / .volume / .shortcut，
-        ///     对应画面上画的 SYSTEM / SOUND / SHORTCUTS（见设置面板截图）。
-        ///   - 五个单选行的行名：依据设置面板截图逐行对照
-        ///     （窗口分辨率 / 画面模式 / 快进模式 / 指针隐藏 / 画面位于最前）。
-        ///   - 角色音量：本地化表里 config.title.charactervolume = 角色音量。
+        /// 本作设置界面的行名**大多是 TMP 文字**（MusicVolumeLabel / VoiceVolumeLabel /
+        /// MessageSpeedLabel …），运行期有内容，优先走上面那条「同行兄弟文本」的路 ——
+        /// 修好 FirstTextOutside 之后三条音量滑条都能念出行名了。
+        /// 这张表是**兜底**：TMP 里取不到字时才退回对象名。
+        ///
+        /// 每一条都要有依据，不要凭感觉往里加：
+        ///   · 行容器名（BgmVolumePanel / MessageSpeedPanel …）取自实测控件树，
+        ///     来源是 BepInEx 日志里的层级路径 Naninovel&lt;Runtime&gt;/ModalUI/SettingsUI/…
+        ///   · 中文名取自游戏自己的本地化表（SettingsMenu.Language / 音量 / 文本速度 …）
+        ///   · 纯图片按钮几条取自 alert.confirm = 确定 / alert.cancel = 取消
+        ///
+        /// （上一版这里放的是**上一个作品** TransparentHer 的行名，
+        ///   General / ScreenPixelOption / CharacterVolumePanel 这些对象在本作里根本不存在，
+        ///   留着只会让人以为它们还在生效。已按本作实查的对象名重写。）
+        ///
+        /// 别名只在控件**自己子树里没有文字**时才会被用到（见 TextOf），
+        /// 所以不会盖掉正常按钮的朗读。
         /// </summary>
         private static readonly Dictionary<string, string> NameAlias =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            { "General",  "通用" },
-            { "Volume",   "音量" },
-            { "Shortcut", "快捷键" },
-
-            { "ScreenPixelOption", "窗口分辨率" },
-            { "FullScreenOption",  "画面模式" },
-            { "FastForwordOption", "快进模式" },
-            { "HideCursorOption",  "指针隐藏" },
-            { "TopWindowOption",   "画面位于最前" },
-
-            { "CharacterVolumePanel", "角色音量" },
+            // ---- 设置界面的行容器（TMP 取不到时的兜底）----
+            { "ScreenModePanel",     "画面模式" },
+            { "MessageSpeedPanel",   "文本显示速度" },
+            { "BgmVolumePanel",      "背景音乐音量" },
+            { "SfxVolumePanel",      "音效音量" },
+            { "VoiceVolumePanel",    "角色语音音量" },
+            { "LocaleLanguagePanel", "界面语言" },
+            { "LocalePanel",         "界面语言" },
+            { "VoiceLocalePanel",    "角色语音语言" },
 
             // ---- 纯图片按钮 ----
-            // 下面这些按钮的文字**画在图片上**，组件里一个字都没有：把 level1-level5
-            // 全部 MonoBehaviour 的字节扫一遍，这些对象里只有按钮状态名
-            // （Normal/Highlighted/Pressed）和回调名，没有任何文本。
-            // 中文名取自游戏自己的本地化表：
-            //   alert.confirm = 确定        alert.cancel = 取消
-            //   bookmark.save.button = 存档  bookmark.load.button = 读档
-            //   config.quitgame = 退出游戏    ingame.quit.confirm = 要退出游戏吗？
-            // 回调名也对得上：姓名确认框的 Yes → OnConfirm，No → OnCancel。
-            //
-            // 别名只在控件**自己子树里没有文字**时才会被用到（见 TextOf），
-            // 所以不会盖掉正常按钮的朗读。
             { "Yes",     "确定" },
             { "No",      "取消" },
             { "Confirm", "确定" },
             { "Cancel",  "取消" },
-            { "Save",    "存档" },
-            { "Load",    "读档" },
             { "Exit",    "退出" },
             { "Skip",    "跳过" },
-            { "Start",   "开始" },
         };
 
         /// <summary>
@@ -1083,12 +1194,27 @@ namespace NoExistenceA11y
             return false;
         }
 
-        private static string FirstTextOutside(Transform parent, Transform exclude)
+        private static string FirstTextOutside(Transform parent, Transform exclude, bool allowSiblingControls)
         {
             try
             {
-                // 这个容器里还有别的控件 → 它是面板，不是「一行」
-                if (HasOtherSelectable(parent, exclude)) return "";
+                // 这个容器里还有别的控件 → 它**通常**是「面板」，里面的文字是标题，
+                // 不是某一行的标签（手机面板顶上那行「通讯」曾被当成里面每个按钮的标签）。
+                //
+                // ★ 但**控件自己那一层**必须放行。本作设置界面的一行长这样：
+                //
+                //     BgmVolumePanel/
+                //       MusicVolumeLabel   ← 行名（TMP，控件的**兄弟**）
+                //       SettingsSlider     ← 控件，子树里只有 Background / Fill Area / Handle
+                //       BtnMute            ← 同一行里的第二个控件（静音）
+                //
+                //   严格判定会因为「这一层还有别的控件」而把整行作废，滑条于是退回对象名 ——
+                //   实测（BepInEx 日志）三条音量滑条全念成「SettingsSlider，滑条，100%」，
+                //   只有没有静音按钮的「文本显示速度」念对了。
+                //
+                //   放行是安全的：下面挑候选文本时，落在**别的 Selectable 子树里**的字
+                //   一律排除，所以静音按钮自己的标签（「静音」）进不来。
+                if (!allowSiblingControls && HasOtherSelectable(parent, exclude)) return "";
 
                 var cands = new List<Component>();
                 try { cands.AddRange(parent.GetComponentsInChildren<TextMeshProUGUI>(true)); }
@@ -1144,13 +1270,26 @@ namespace NoExistenceA11y
                 {
                     Transform p = t.parent;
                     if (p == null) break;
-                    string found = FirstTextOutside(p, t);
+                    // 第 0 层 = 控件自己所在的那一行：允许这一层里还有别的控件
+                    string found = FirstTextOutside(p, t, up == 0);
                     if (found.Length > 0) return found;
                     t = p;
                 }
             }
             catch { }
             return "";
+        }
+
+        /// <summary>两个说法是不是同一个东西（一个把另一个包含进去了）。</summary>
+        private static bool RowNameCovers(string row, string near)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(row) || string.IsNullOrEmpty(near)) return false;
+                return row.IndexOf(near, StringComparison.Ordinal) >= 0
+                    || near.IndexOf(row, StringComparison.Ordinal) >= 0;
+            }
+            catch { return false; }
         }
 
         /// <summary>别名命中的是不是控件自己（而不是某一级祖先行名）。</summary>
@@ -1217,6 +1356,14 @@ namespace NoExistenceA11y
                     //   「确定要使用这个姓名吗，确定，按钮」
                     // 别名来自祖先行名时保持原顺序（「窗口分辨率，1280×720」）。
                     if (AliasOnSelf(s)) return near + "，" + row;
+
+                    // 行名和同行文字说的**是同一件事**时（「背景音乐音量」/「背景音乐」）
+                    // 只念一次，念更完整的那一个。现在的行名兜底表是按行容器给的，
+                    // 而 TMP 里往往也有同义的说法，不去重就会读成
+                    // 「背景音乐音量，背景音乐」。
+                    if (RowNameCovers(row, near))
+                        return row.Length >= near.Length ? row : near;
+
                     return row + "，" + near;
                 }
                 return near;
@@ -1340,12 +1487,38 @@ namespace NoExistenceA11y
             return sb.ToString();
         }
 
+        /// <summary>该组里有多少个「点得动」的控件（只读兜底进来的不算）。</summary>
+        private static int UsableCount(Group g)
+        {
+            int n = 0;
+            for (int i = 0; i < g.Items.Count; i++)
+            {
+                try
+                {
+                    var s = As<Selectable>(g.Items[i]);
+                    if (s != null && s.interactable) n++;
+                }
+                catch { }
+            }
+            return n;
+        }
+
         private static void AnnounceGroup(bool withCount)
         {
             if (Groups.Count == 0 || Items.Count == 0) return;
             string prefix = withCount
                 ? ("导航模式，第 " + (_groupIndex + 1) + " 组，共 " + Items.Count + " 项。")
                 : "";
+
+            // 整组都是「只读」时先说清楚，免得玩家以为补丁坏了：
+            // 这是游戏自己把这些控件标成不可用的（本作的彩蛋设置界面就是整屏如此）。
+            try
+            {
+                if (UsableCount(Groups[_groupIndex]) == 0)
+                    prefix += "这一屏的控件当前都不可用，只能听，不能选。";
+            }
+            catch { }
+
             Announce(prefix);
         }
 
