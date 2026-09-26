@@ -32,6 +32,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgRequirePrintEvent;
         internal static ConfigEntry<string> CfgDirectTextPaths;
         internal static ConfigEntry<bool> CfgReadSubtitles;
+        internal static ConfigEntry<bool> CfgReadNotebook;
         internal static ConfigEntry<string> CfgSpeechBackend;
         internal static ConfigEntry<string> CfgRepeatKey;
         internal static ConfigEntry<bool> CfgSpeechInterrupt;
@@ -139,6 +140,14 @@ namespace NoExistenceA11y
                 "文字写在预制体里的 TMP 节点上。只挂打印器的话这段一个字都不念 ——\n" +
                 "玩家报告的就是「第四章结尾的字幕不可读」。\n" +
                 "开启后：字幕按画面节奏念，滚进可见区的每一行念一次。");
+            CfgReadNotebook = Config.Bind("朗读", "朗读笔记本（假回想）", true,
+                "剧情里「打开笔记本」那一段。\n" +
+                "\n" +
+                "★ 它也不是对话：剧本里是 `@FakeBackLog` 命令把游戏的**假回想面板**\n" +
+                "（BacklogFakeUI / BackLogFakePanel）摊开，一条条列着故事已经发生的句子，\n" +
+                "既没有打印事件、也不是 RevealableText —— 只挂打印器的话这一段同样一个字都不念\n" +
+                "（玩家报告的原话是「笔记本还是没有朗读」）。\n" +
+                "开启后按画面节奏念，滚进可见区的每条念一次。");
             CfgSpeechBackend = Config.Bind("朗读", "语音后端", "自动",
                 "自动 / NVDA / Tolk / SAPI。填具体值可强制只用那一个（排查用）。");
             CfgRepeatKey = Config.Bind("朗读", "重读键", "Backspace",
@@ -260,7 +269,7 @@ namespace NoExistenceA11y
                 "关掉的话会把隐藏面板里的控件也扫进来，通常只会造成噪声。");
             CfgUiSortByPosition = Config.Bind("界面导航", "按屏幕位置排序", true,
                 "关掉则按渲染层级排序。默认按位置更符合直觉。");
-            CfgUiTextWhitelist = Config.Bind("界面导航", "可导航文字的界面", "BacklogUI",
+            CfgUiTextWhitelist = Config.Bind("界面导航", "可导航文字的界面", "BacklogUI,BacklogFakeUI",
                 "★ 逗号分隔的路径片段。命中这些界面时，**纯文本也会变成导航项**。\n" +
                 "\n" +
                 "用途：回想（History）面板里每条台词是一个纯文字，没有对应的控件，\n" +
@@ -603,9 +612,20 @@ namespace NoExistenceA11y
             // 光有「打印事件」还不够 —— Naninovel 的面板用 CanvasGroup 淡入淡出，
             // 藏起来时 GameObject 仍是 active。实测仍有不属于当前剧情的文本被念出来，
             // 就是漏在这一层。这里查的是承载文本的那个 RevealableText 自己的可见性。
-            if (inst != null && UiVis.Hidden(inst.transform))
+            // ★ 这一道闸门「可不可见」的口径，白名单面板要放宽。
+            //
+            // UiVis.Hidden 把 CanvasGroup.interactable = false / blocksRaycasts = false
+            // 也算"隐藏"—— 防剧透时宁可少念是对的。但本作设置界面整屏都是
+            // "alpha = 1 **看得见**、interactable = false **点不动**"，
+            // 于是那一屏的解说文字全被这条闸门拦掉（实测日志：REVEAL 拦下（面板不可见…））。
+            // 白名单面板（本来就不经过打印器的那种）只按 alpha 判可见：
+            // 它就在画面上，念它是应该的。
+            bool hidden = inst != null
+                && (direct ? UiVis.HiddenByAlpha(inst.transform) : UiVis.Hidden(inst.transform));
+            if (hidden)
             {
-                Diag("REVEAL 拦下（面板不可见，alpha=0 或已禁用）  " + Short(speech));
+                Diag("REVEAL 拦下（面板不可见，alpha=0 或已禁用）  "
+                    + (inst != null ? UiNav.PathOf(inst.transform) : "?") + "  " + Short(speech));
                 return;
             }
 

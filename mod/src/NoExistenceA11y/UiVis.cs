@@ -23,6 +23,34 @@ namespace NoExistenceA11y
     {
         private const int MaxDepth = 40;
 
+        /// <summary>
+        /// **只按 alpha** 判「看不看得见」：沿父链只要有 CanvasGroup.alpha ≈ 0 就算看不见。
+        ///
+        /// 与 Hidden 的区别：Hidden 把 `interactable = false` / `blocksRaycasts = false`
+        /// 也算"隐藏"，那对**防剧透**是对的（宁可少念），但会把
+        /// **"看得见但点不动"**（本作彩蛋设置界面就是整屏如此）误判成看不见 ——
+        /// 实测那一屏的解说文字全被拦在"面板不可见"这条闸门上。
+        /// 需要区分这两件事的场合（导航的只读项、白名单面板的朗读）用这个。
+        /// </summary>
+        public static bool HiddenByAlpha(Transform t)
+        {
+            if (t == null) return false;
+            try
+            {
+                Transform cur = t;
+                int guard = 0;
+                while (cur != null && guard++ < MaxDepth)
+                {
+                    CanvasGroup cg = null;
+                    try { cg = cur.GetComponent<CanvasGroup>(); } catch { }
+                    if (cg != null && cg.alpha < 0.01f) return true;
+                    cur = cur.parent;
+                }
+            }
+            catch { }
+            return false;
+        }
+
         /// <summary>沿父链查 CanvasGroup；alpha≈0 / interactable=false / blocksRaycasts=false 即视为不可见。</summary>
         public static bool Hidden(Transform t)
         {

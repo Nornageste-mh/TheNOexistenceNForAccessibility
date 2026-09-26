@@ -95,6 +95,15 @@ namespace NoExistenceA11y
             /// </summary>
             public readonly List<Component> ReadOnly = new List<Component>();
 
+            /// <summary>
+            /// 「游戏标成可用、这一帧却点不到」的控件（典型：彩蛋设置界面里的**返回**按钮 ——
+            /// `interactable = true`，但父级 CanvasGroup 关了交互，严格可见性判定会把它
+            /// 判成"画面外或点不到"）。
+            /// 与 ReadOnly 一样，只在整组一个能按的都不剩时才启用；它们本身是可用的，
+            /// 所以收回来之后**照常可以激活** —— 那正是玩家要的（不然就出不去了）。
+            /// </summary>
+            public readonly List<Component> Blocked = new List<Component>();
+
             // 本组所在 Canvas 的世界矩形与相机：用来判断成员是不是真的在画面上
             public Rect CanvasRect;
             public bool HasCanvasRect;
@@ -504,12 +513,16 @@ namespace NoExistenceA11y
                 for (int i = 0; i < Groups.Count; i++)
                 {
                     Group g = Groups[i];
-                    if (g.Items.Count > 0 || g.ReadOnly.Count == 0) continue;
-                    g.Items.AddRange(g.ReadOnly);
+                    if (g.Items.Count > 0) continue;
+                    if (g.ReadOnly.Count == 0 && g.Blocked.Count == 0) continue;
+
+                    g.Items.AddRange(g.ReadOnly);   // 看得见、游戏标成不可用
+                    g.Items.AddRange(g.Blocked);    // 看得见、游戏标成可用但这一帧点不到（如「返回」）
                     readOnlyKept += g.Items.Count;
                 }
                 if (readOnlyKept > 0)
-                    DiagScan("这一屏没有可用控件，按「只读」纳入 " + readOnlyKept + " 个（念得出、点不动）");
+                    DiagScan("这一屏没有能按的控件，纳入 " + readOnlyKept
+                        + " 个（只读的只念不点；看得见但点不到的照常可激活）");
 
                 if (Plugin.L != null)
                 {
@@ -609,21 +622,7 @@ namespace NoExistenceA11y
         /// </summary>
         private static bool AlphaHidden(Transform t)
         {
-            if (t == null) return false;
-            try
-            {
-                Transform cur = t;
-                int guard = 0;
-                while (cur != null && guard++ < 40)
-                {
-                    CanvasGroup cg = null;
-                    try { cg = cur.GetComponent<CanvasGroup>(); } catch { }
-                    if (cg != null && cg.alpha < 0.01f) return true;
-                    cur = cur.parent;
-                }
-            }
-            catch { }
-            return false;
+            return UiVis.HiddenByAlpha(t);
         }
 
         /// <summary>
@@ -652,12 +651,50 @@ namespace NoExistenceA11y
             for (int i = 0; i < Groups.Count; i++)
             {
                 Group g = Groups[i];
-                // 「能按的」照旧要过全部三档（能看到 + 能点到）
-                FilterList(g, g.Items, record, excluded, ref removed, false);
+                // 「能按的」照旧要过全部三档（能看到 + 能点到）；被筛掉但**看得见**的
+                // 先存进 Blocked 备用（返回按钮就是这一类）
+                FilterBlocked(g, record, excluded, ref removed);
                 // 「只读」那一篮子放宽：只要**看得见**（alpha > 0）且在画面矩形里就留着 ——
                 // 它们本来就点不动（interactable = false），要求"能点到"等于自相矛盾。
                 // 这一篮子只有在整组没有可用控件时才会被启用，且永远不激活。
                 FilterList(g, g.ReadOnly, record, excluded, ref removed, true);
+            }
+        }
+
+        /// <summary>
+        /// 「能按的」那一篮的过滤：过严格的可见性判定；被筛掉的那些如果**只是点不到**
+        /// （alpha 还在、还在画面矩形里），留进 Blocked 备用 ——
+        /// 整组一个能按的都不剩时它们会被当导航项收回来。
+        /// 典型例子是彩蛋设置界面里的「返回」：`interactable = true`，
+        /// 但父级 CanvasGroup 关了交互，严格判定会把它判成"画面外或点不到"，
+        /// 于是玩家**被困在那一屏里出不来**（实测反馈）。
+        /// </summary>
+        private static void FilterBlocked(Group g, bool record, List<string> excluded, ref int removed)
+        {
+            var blocked = new List<Component>();
+            int n = 0;
+            g.Items.RemoveAll(s =>
+            {
+                bool ok;
+                // 判定本身抛异常时按「可见」处理 —— 宁可多念一个，也不要整组消失
+                try { ok = VisiblyClickable(s, g); } catch { ok = true; }
+                if (ok) return false;
+
+                n++;
+                bool visible = false;
+                try { visible = !AlphaHidden(s.transform) && OnScreenOnly(s, g); } catch { visible = false; }
+                if (visible) blocked.Add(s);
+                else if (record && excluded != null && excluded.Count < 60)
+                    excluded.Add("[画面外或点不到] " + PathOf(s.transform));
+                return true;
+            });
+            removed += n;
+
+            if (blocked.Count > 0)
+            {
+                g.Blocked.AddRange(blocked);
+                if (record && excluded != null && excluded.Count < 60)
+                    excluded.Add("[看得见但点不到] " + blocked.Count + " 个（整屏没有能按的时才收回来）");
             }
         }
 
