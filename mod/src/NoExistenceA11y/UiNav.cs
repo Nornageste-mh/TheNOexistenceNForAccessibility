@@ -155,6 +155,9 @@ namespace NoExistenceA11y
         // 当前项失效时我们请求过一次重扫，记下来免得每帧都重扫
         private static Component _rescanRequestedFor;
 
+        // 「当前项已经死掉」这类失效的重扫节流（见 Update 里那一段）
+        private static float _nextDeadRescan;
+
         // 场景切换防护
         private static int _lastSceneHandle = int.MinValue;
         private static float _sceneChangedAt = float.NegativeInfinity;
@@ -1894,11 +1897,23 @@ namespace NoExistenceA11y
             // 确认框：promptUI 与 confirmationUI 直接 SetActive 互换）不会通知我们，
             // 列表会一直停在旧控件上，新面板的按钮就「定位不到」。
             // 当前项一旦失效就重扫一次；每个失效对象只请求一次，避免反复重扫。
-            if (_active && _pendingRescanFrame < 0)
+            // ★ 当前项失效就重扫 —— **"当前项为 null" 也必须重扫**（这里栽过一次）：
+            //   选项框（ChoiceHandlerPanel）的按钮是**池化复用**的，
+            //   扫描那一刻抓到的那个 Button 下一帧就可能被换掉/销毁，
+            //   于是 CurrentItem() 返回 Unity 伪空 → 回车那一支直接 return（按键原样交还游戏），
+            //   既没反应、也没提示。实测日志就是这个形状：
+            //     扫描里明明有「#1 （翻开笔记本），按钮」，但整局没有一行「激活 Selectable」——
+            //   玩家报告原话：「用界面导航模式点击选项是没有用的，只能用数字键选择」
+            //   （数字键那条路每帧重扫容器，所以一直是好的）。
+            if (_active && _pendingRescanFrame < 0 && Time.realtimeSinceStartup >= _nextDeadRescan)
             {
                 Component cur = CurrentItem();
-                if (cur != null && (cur.gameObject == null || !cur.gameObject.activeInHierarchy) && !ReferenceEquals(cur, _rescanRequestedFor))
+                bool dead = cur == null
+                    || cur.gameObject == null
+                    || !cur.gameObject.activeInHierarchy;
+                if (dead)
                 {
+                    _nextDeadRescan = Time.realtimeSinceStartup + 0.4f;
                     _rescanRequestedFor = cur;
                     RequestRescanNextFrame();
                 }
@@ -1916,6 +1931,13 @@ namespace NoExistenceA11y
                 || Input.GetKeyDown(KeyCode.Space))
             {
                 Component target = CurrentItem();
+                if (target == null && _active)
+                {
+                    // 导航模式开着、列表里也有项，却拿不出"当前项" —— 说明那个对象已经死掉
+                    // （Unity 伪空；池化复用的控件最常见）。留一行日志，
+                    // 免得又变成"按了没反应、日志里什么都没有"这种最难查的形态。
+                    Plugin.Diag("NAV 回车：当前项已失效（列表 " + Items.Count + " 项），按键交还游戏");
+                }
                 if (target != null)
                 {
                     _submitHandledFrame = Time.frameCount;
