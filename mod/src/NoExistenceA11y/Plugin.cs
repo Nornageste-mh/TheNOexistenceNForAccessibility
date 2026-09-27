@@ -33,6 +33,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<string> CfgDirectTextPaths;
         internal static ConfigEntry<bool> CfgReadSubtitles;
         internal static ConfigEntry<bool> CfgReadNotebook;
+        internal static ConfigEntry<bool> CfgAnnounceNotebookImage;
         internal static ConfigEntry<string> CfgSpeechBackend;
         internal static ConfigEntry<string> CfgRepeatKey;
         internal static ConfigEntry<bool> CfgSpeechInterrupt;
@@ -148,6 +149,17 @@ namespace NoExistenceA11y
                 "既没有打印事件、也不是 RevealableText —— 只挂打印器的话这一段同样一个字都不念\n" +
                 "（玩家报告的原话是「笔记本还是没有朗读」）。\n" +
                 "开启后按画面节奏念，滚进可见区的每条念一次。");
+            CfgAnnounceNotebookImage = Config.Bind("朗读", "播报「笔记本图像」", true,
+                "剧情里翻开的笔记本是**图片**（剧本用 `@ModifyBackground diary1`~diary4 把整页纸\n" +
+                "换上来），纸页上的手写字**不在游戏数据里**：实测把 4945 个文本对象逐个扫、\n" +
+                "再把两个数据文件按原始字节扫（417MB + 2142MB），特征短语 0 命中 —— 字是画进图里的，\n" +
+                "**任何读文本的钩子都拿不到**。\n" +
+                "\n" +
+                "所以这里只做一件诚实的事：翻到笔记本页时念一句「笔记本图像」，\n" +
+                "让你知道画面上出现了一张图、以及为什么读屏不出声。\n" +
+                "**纸页内容请用读屏软件的 OCR 功能看**（NVDA 装 OCR 插件后对着屏幕按一下即可）。\n" +
+                "\n" +
+                "补丁不会把纸页原文抄进来当查表 —— 那是游戏的美术与文本。");
             CfgSpeechBackend = Config.Bind("朗读", "语音后端", "自动",
                 "自动 / NVDA / Tolk / SAPI。填具体值可强制只用那一个（排查用）。");
             CfgRepeatKey = Config.Bind("朗读", "重读键", "Backspace",
@@ -328,6 +340,7 @@ namespace NoExistenceA11y
                 h.PatchAll(typeof(RevealPatch));
                 h.PatchAll(typeof(ChoicePanelPatch));
                 L.LogInfo("[a11y] patched RevealableText.set_Text + ChoiceHandlerPanel.AddChoiceButton");
+
             }
             catch (Exception e) { L.LogError("[a11y] harmony patch failed: " + e.Message); }
 
@@ -543,6 +556,26 @@ namespace NoExistenceA11y
         private static readonly System.Collections.Generic.Dictionary<int, string> _panelText =
             new System.Collections.Generic.Dictionary<int, string>();
 
+        /// <summary>
+        /// 这个面板上一次写进去的文本**到底念没念出来**。
+        ///
+        /// 为什么要记：面板文本是累加的（章节标题面板先写标题、再把引言接上），
+        /// 所以"只念新增的那一段"是对的 —— **但前提是前面那段真的念过**。
+        /// 如果前面那段被闸门拦下了（没有打印事件 / 面板当时不可见 / 是纯标点），
+        /// 再"只念新增"就等于**把前半句永久丢掉**：玩家听到的是半截话 ——
+        /// 反馈里的「长文本会把前面的内容丢弃掉」正是这个形状。
+        /// 实测日志里就有这种现场：同一面板先出现「REVEAL 拦下（没有打印事件…）」，
+        /// 紧接着同一段文本又带着打印事件进来。
+        /// </summary>
+        private static readonly System.Collections.Generic.Dictionary<int, bool> _panelSpoken =
+            new System.Collections.Generic.Dictionary<int, bool>();
+
+        private static void MarkPanelSpoken(int panelId, bool spoken)
+        {
+            if (panelId == 0) return;
+            try { _panelSpoken[panelId] = spoken; } catch { }
+        }
+
         internal static void OnReveal(Naninovel.UI.RevealableText inst, string raw)
         {
             if (CfgEnabled == null || !CfgEnabled.Value) return;
@@ -555,11 +588,25 @@ namespace NoExistenceA11y
             if (panelId != 0)
             {
                 string prev;
+                bool prevSpoken = false;
+                try { _panelSpoken.TryGetValue(panelId, out prevSpoken); } catch { }
                 if (_panelText.TryGetValue(panelId, out prev) && !string.IsNullOrEmpty(prev))
                 {
                     if (full == prev) return;                        // 完全没变
                     if (full.Length > prev.Length && full.StartsWith(prev))
-                        raw = full.Substring(prev.Length);            // 只读新增
+                    {
+                        if (prevSpoken)
+                        {
+                            raw = full.Substring(prev.Length);        // 只读新增（前文已经念过）
+                        }
+                        else
+                        {
+                            // 前文从来没念出来过 —— 这时候只读新增就是把前半句丢掉。
+                            // 保持 raw = full，整段念。
+                            Diag("REVEAL 追加且前文未念过 → 整段念  panel=" + panelId
+                                + " prev=" + Short(prev) + " full=" + Short(full));
+                        }
+                    }
                 }
                 _panelText[panelId] = full;
             }
@@ -602,6 +649,7 @@ namespace NoExistenceA11y
 
             if (!fresh && !direct && (CfgRequirePrintEvent == null || CfgRequirePrintEvent.Value))
             {
+                MarkPanelSpoken(panelId, false);
                 Diag("REVEAL 拦下（没有打印事件，不是正在显示的行）  "
                     + (inst != null ? UiNav.PathOf(inst.transform) : "?") + "  " + Short(speech));
                 return;
@@ -624,12 +672,17 @@ namespace NoExistenceA11y
                 && (direct ? UiVis.HiddenByAlpha(inst.transform) : UiVis.Hidden(inst.transform));
             if (hidden)
             {
+                MarkPanelSpoken(panelId, false);
                 Diag("REVEAL 拦下（面板不可见，alpha=0 或已禁用）  "
                     + (inst != null ? UiNav.PathOf(inst.transform) : "?") + "  " + Short(speech));
                 return;
             }
 
-            bool voiced = key != null && VoiceLineIds.Voiced.Contains(key);
+            // ★ 判据：完整键（Script/行号）或**只看行号**任一命中即算有配音。
+            //   游戏的语音文件是按行号命名的（~<hash>），而同一个行号会被多个剧本复用，
+            //   只按 Script/行号 登记时复用的那些剧本会漏判 —— 实测 844 条有配音的行里漏了 8 条，
+            //   表现就是"有配音的台词被当成无配音、TTS 叠在角色语音上"。
+            bool voiced = VoiceLineIds.IsVoiced(key);
             string name = SpeakerNames.Resolve(author);
 
             // 面板路径也记上：排查「长台词被截」时要能看出这一句属于哪个面板、
@@ -639,6 +692,7 @@ namespace NoExistenceA11y
                 inst != null ? UiNav.PathOf(inst.transform) : "?", Short(speech)));
 
             if (p != null) Current = null;   // 一行只消费一次
+            MarkPanelSpoken(panelId, true);  // 这一行确实处理了（下面要么放语音、要么念文本）
 
             if (!CfgReadTrivial.Value && TextProc.IsTrivial(speech)) return;
 
@@ -686,6 +740,7 @@ namespace NoExistenceA11y
             }
             try { Choices.Update(); } catch (Exception e) { Plugin.Diag("Choices: " + e.Message); }
             try { Subtitles.Update(); } catch (Exception e) { Plugin.Diag("Subtitles: " + e.Message); }
+            try { NotebookPage.Update(); } catch (Exception e) { Plugin.Diag("NotebookPage: " + e.Message); }
             try { Plugin.CheckRepeatHotkey(); } catch (Exception e) { Plugin.Diag("Repeat: " + e.Message); }
             try { Plugin.CheckSilenceHotkey(); } catch (Exception e) { Plugin.Diag("Silence: " + e.Message); }
             try { LoadingWatch.Update(); } catch (Exception e) { Plugin.Diag("Loading: " + e.Message); }
