@@ -173,6 +173,13 @@ namespace NoExistenceA11y
             else Enter();
         }
 
+        // 进场重试：界面常常是"淡入 / 滑入"出来的，刚出现那一瞬控件的 alpha 还是 0
+        // 或还在画面外，严格可见性判定会把它们全筛掉 —— 那时按 Tab 就白按了。
+        // 实测（作者 2026-09-27 日志）：同一个选项框，早按一次「最终纳入=0 → Tab 进入导航失败」，
+        // 晚按一次就正常 —— 玩家的体感正是「有时候行有时候不行」。
+        private static int _enterRetry;
+        private static float _retryEnterAt = -1f;
+
         private static void Enter()
         {
             if (!SceneStable())
@@ -184,13 +191,28 @@ namespace NoExistenceA11y
             Scan();
             if (Groups.Count == 0 || Items.Count == 0)
             {
+                // ★ 进不去也要留痕：以前这一步是静默的，于是"按了 Tab 没反应"在日志里
+                //   和"根本没按 Tab"长得一模一样（作者复测时就因此无法判断）。
+                //
+                // 界面可能还在进场动画里 —— 重试几次（约 1 秒）再下结论。
+                if (_enterRetry < 3)
+                {
+                    _enterRetry++;
+                    DiagScan("Tab 进入导航失败：扫到 0 项，0.35 秒后重试 " + _enterRetry + "/3");
+                    _retryEnterAt = Time.realtimeSinceStartup + 0.35f;
+                    return;
+                }
+                _enterRetry = 0;
+                DiagScan("Tab 进入导航失败：扫到 0 项（重试 3 次仍为空）");
                 Speech.Speak("当前界面上没有可操作的项目。", true);
                 return;
             }
+            _enterRetry = 0;
+            _retryEnterAt = -1f;
 
             _active = true;
             _index = 0;
-            BlockGameInput(true);
+            SyncInputBlock();          // 按"屏幕上有没有选项框"决定要不要屏蔽游戏输入
             AnnounceGroup(true);
         }
 
@@ -257,6 +279,51 @@ namespace NoExistenceA11y
             {
                 _inputBlocked = false;
                 Plugin.Diag("屏蔽游戏输入失败: " + e.GetType().Name + ": " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// 每帧维护「游戏输入要不要屏蔽」。
+        ///
+        /// ★ 选项框在场时**必须放行**。实测（作者 2026-09-27）：
+        /// 屏蔽着的时候，导航模式里回车点选项**经常没反应**，同一个选项要按三次才生效；
+        /// 把这一项关掉就稳定了 —— Naninovel 处理选项本身要过这个总闸。
+        /// 所以改成按"当前屏幕上有没有选项框"动态决定：
+        ///   · 选项框在 → 放行（否则选项点不动）
+        ///   · 只有对话 → 屏蔽（这才是当初引入它的原因：别让回车同时把剧情往前推一格）
+        /// 配置「导航时屏蔽游戏输入」关掉时，这里整个不生效（保持游戏原有状态）。
+        /// </summary>
+        private static void SyncInputBlock()
+        {
+            if (!_active) return;
+            if (Plugin.CfgNavBlockInput != null && !Plugin.CfgNavBlockInput.Value) return;
+
+            bool want = !Choices.Live;      // 选项框不在场才屏蔽
+            if (want == _inputBlocked) return;
+
+            try
+            {
+                var im = Naninovel.Engine.GetService<Naninovel.IInputManager>();
+                if (im == null) return;
+
+                if (want)
+                {
+                    _prevProcessInput = im.ProcessInput;
+                    im.ProcessInput = false;
+                    _inputBlocked = true;
+                    Plugin.Diag("导航模式：选项框不在场 → 屏蔽游戏输入（原值 " + _prevProcessInput + "）");
+                }
+                else
+                {
+                    im.ProcessInput = _prevProcessInput;
+                    _inputBlocked = false;
+                    Plugin.Diag("导航模式：选项框在场 → 放行游戏输入（否则选项点不动）");
+                }
+            }
+            catch (Exception e)
+            {
+                _inputBlocked = false;
+                Plugin.Diag("维护输入屏蔽失败: " + e.GetType().Name);
             }
         }
 
@@ -1860,6 +1927,16 @@ namespace NoExistenceA11y
             }
             catch { }
 
+            // ---- 输入屏蔽按"选项框在不在"动态维持 ----
+            SyncInputBlock();
+
+            // ---- 进场重试：0.35 秒后再试一次进导航（界面刚出现时用得上）----
+            if (_retryEnterAt > 0f && Time.realtimeSinceStartup >= _retryEnterAt && !_active)
+            {
+                _retryEnterAt = -1f;
+                Enter();
+            }
+
             // ---- 激活后的下一帧重扫（唯一允许的自动扫描）----
             bool rescanDue =
                 (_pendingRescanFrame >= 0 && Time.frameCount >= _pendingRescanFrame) ||
@@ -1891,7 +1968,12 @@ namespace NoExistenceA11y
                 }
             }
 
-            if (Input.GetKeyDown(KeyCode.Tab)) { Toggle(); return; }
+            if (Input.GetKeyDown(KeyCode.Tab))
+            {
+                DiagScan("Tab 按下（当前导航模式=" + _active + "）");
+                Toggle();
+                return;
+            }
 
             // 游戏**自己**换面板时（例如姓名输入按回车 →「确定要使用这个姓名吗」
             // 确认框：promptUI 与 confirmationUI 直接 SetActive 互换）不会通知我们，
@@ -1931,12 +2013,25 @@ namespace NoExistenceA11y
                 || Input.GetKeyDown(KeyCode.Space))
             {
                 Component target = CurrentItem();
+
+                // ★ 当前项已经死掉时，**当场重扫一次再试**。
+                //
+                // 选项框（ChoiceHandlerPanel）的按钮是池化复用的：扫描那一刻抓到的 Button
+                // 下一帧就可能被销毁，于是 CurrentItem() 返回 Unity 伪空、回车那一支直接 return —
+                // 玩家的体验就是"按了没反应"。实测日志的形状正是如此：扫描里明明有
+                // 「#1 （翻开笔记本），按钮」，却没有任何一行「激活 Selectable」。
+                //
+                // 只在"拿不出当前项"时重扫一次（下一次 Update 里的轮询那条路还在，二者互补）：
+                // 这样**第一次**按回车就能生效，而不是要按两下。
                 if (target == null && _active)
                 {
-                    // 导航模式开着、列表里也有项，却拿不出"当前项" —— 说明那个对象已经死掉
-                    // （Unity 伪空；池化复用的控件最常见）。留一行日志，
-                    // 免得又变成"按了没反应、日志里什么都没有"这种最难查的形态。
-                    Plugin.Diag("NAV 回车：当前项已失效（列表 " + Items.Count + " 项），按键交还游戏");
+                    Scan();
+                    if (Groups.Count > 0 && Items.Count > 0)
+                    {
+                        _index = Mathf.Clamp(_index, 0, Items.Count - 1);
+                        target = CurrentItem();
+                    }
+                    Plugin.Diag("NAV 回车：当前项已失效 → 已当场重扫，结果=" + (target != null ? "有" : "仍无"));
                 }
                 if (target != null)
                 {

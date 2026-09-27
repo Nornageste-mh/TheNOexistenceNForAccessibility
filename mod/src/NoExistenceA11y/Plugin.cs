@@ -34,6 +34,7 @@ namespace NoExistenceA11y
         internal static ConfigEntry<bool> CfgReadSubtitles;
         internal static ConfigEntry<bool> CfgReadNotebook;
         internal static ConfigEntry<bool> CfgAnnounceNotebookImage;
+        internal static ConfigEntry<string> CfgVoicedSpeakers;
         internal static ConfigEntry<string> CfgSpeechBackend;
         internal static ConfigEntry<string> CfgRepeatKey;
         internal static ConfigEntry<bool> CfgSpeechInterrupt;
@@ -160,6 +161,18 @@ namespace NoExistenceA11y
                 "**纸页内容请用读屏软件的 OCR 功能看**（NVDA 装 OCR 插件后对着屏幕按一下即可）。\n" +
                 "\n" +
                 "补丁不会把纸页原文抄进来当查表 —— 那是游戏的美术与文本。");
+            CfgVoicedSpeakers = Config.Bind("朗读", "按说话人当成有配音", "莉莉丝,???",
+                "★ 逗号分隔的关键词。**说话人名（或游戏里的说话人 id）里含这些词的行，一律当成有配音**：\n" +
+                "只放游戏语音、不再用 TTS 念文本。\n" +
+                "\n" +
+                "为什么要有这一条（作者定的『暴力』口径）：配音白名单是按**行号**对的，\n" +
+                "难免有漏 —— 漏一条的表现就是『这一句明明有语音，读屏却又念了一遍』。\n" +
+                "按**人**过滤不会漏：本作有配音的就是莉莉丝（含她的各种名号）与 ???，\n" +
+                "配角 / 道具（书桌、低筋面粉……）都没有配音，照念。\n" +
+                "\n" +
+                "代价：万一某句莉莉丝的台词其实**没有**配音，这句的文本就不会自动念了 ——\n" +
+                "按「重读键」（退格）随时能把它念出来，所以代价可控。\n" +
+                "留空可停用（退回到只按行号白名单判断）。");
             CfgSpeechBackend = Config.Bind("朗读", "语音后端", "自动",
                 "自动 / NVDA / Tolk / SAPI。填具体值可强制只用那一个（排查用）。");
             CfgRepeatKey = Config.Bind("朗读", "重读键", "Backspace",
@@ -450,6 +463,32 @@ namespace NoExistenceA11y
         /// 某个文本面板是否落在配置的「不经过打印器也朗读」白名单里。
         /// 与导航那份白名单同一套口径：逗号分隔、按**层级路径片段**匹配、大小写不敏感。
         /// </summary>
+        /// <summary>
+        /// 说话人是不是「一定有配音」的那一类（作者口径：名字里含「莉莉丝」，或者就是 ???）。
+        /// 关键词可配置；对**显示名**与**原始 speaker id** 都匹配
+        /// （Lilith / Lilith_1 / QLilith / PrincessLilith / DemonKingLilith 这些 id 直接就命中）。
+        /// </summary>
+        private static bool SpeakerLooksVoiced(string author, string name)
+        {
+            try
+            {
+                var cfg = CfgVoicedSpeakers;
+                if (cfg == null || string.IsNullOrEmpty(cfg.Value)) return false;
+                if (string.IsNullOrEmpty(author) && string.IsNullOrEmpty(name)) return false;
+
+                string[] frags = cfg.Value.Split(new char[] { ',', '，' });
+                for (int i = 0; i < frags.Length; i++)
+                {
+                    string f = frags[i].Trim();
+                    if (f.Length == 0) continue;
+                    if (!string.IsNullOrEmpty(name) && name.IndexOf(f, StringComparison.Ordinal) >= 0) return true;
+                    if (!string.IsNullOrEmpty(author) && author.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
         private static bool PathListHit(UnityEngine.Transform t, ConfigEntry<string> cfg)
         {
             try
@@ -682,13 +721,20 @@ namespace NoExistenceA11y
             //   游戏的语音文件是按行号命名的（~<hash>），而同一个行号会被多个剧本复用，
             //   只按 Script/行号 登记时复用的那些剧本会漏判 —— 实测 844 条有配音的行里漏了 8 条，
             //   表现就是"有配音的台词被当成无配音、TTS 叠在角色语音上"。
-            bool voiced = VoiceLineIds.IsVoiced(key);
+            // ★ 两条判据取并集（作者定的口径）：
+            //   1) 行号白名单（精确，但可能漏）
+            //   2) **说话人白名单**：说话人名 / id 里含「莉莉丝」或就是 ??? 的一律当有配音
+            //      —— 按人过滤不会漏；代价是万一某句其实没配音，文本就不自动念了
+            //      （按退格仍能念出来，所以代价可控）。
             string name = SpeakerNames.Resolve(author);
+            bool voicedBySpeaker = SpeakerLooksVoiced(author, name);
+            bool voiced = voicedBySpeaker || VoiceLineIds.IsVoiced(key);
 
             // 面板路径也记上：排查「长台词被截」时要能看出这一句属于哪个面板、
             // 以及同一个面板上前后两次写入到底写了什么。
-            Diag(string.Format("REVEAL fresh={0} printer={1} author={2} name={3} key={4} voiced={5} panel={6} path={7} text={8}",
-                fresh, printer ?? "-", author ?? "(空)", name ?? "-", key ?? "-", voiced, panelId,
+            Diag(string.Format("REVEAL fresh={0} printer={1} author={2} name={3} key={4} voiced={5}({9}) panel={6} path={7} text={8}",
+                fresh, printer ?? "-", author ?? "(空)", name ?? "-", key ?? "-", voiced,
+                voicedBySpeaker ? "说话人" : "行号", panelId,
                 inst != null ? UiNav.PathOf(inst.transform) : "?", Short(speech)));
 
             if (p != null) Current = null;   // 一行只消费一次

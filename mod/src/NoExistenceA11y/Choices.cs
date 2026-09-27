@@ -31,6 +31,9 @@ namespace NoExistenceA11y
         private static Naninovel.UI.ChoiceHandlerPanel _panel;
         private static readonly List<string> _labels = new List<string>();
         private static readonly List<Button> _buttons = new List<Button>();
+        /// <summary>选项框此刻是不是真的在画面上（UiNav 用它决定"要不要屏蔽游戏输入"）。</summary>
+        internal static bool Live;
+
         private static string _announcedKey = "";
         private static int _lastChildCount = -1;
 
@@ -169,6 +172,7 @@ namespace NoExistenceA11y
             // 如果这时面板被淡出，残留的按钮会被当成新选项念出来 ——
             // 表现就是「念了一些不属于当前剧情的选项」。
             bool live = panel != null && UiVis.Visible(panel);
+            Live = live;
 
             if (!live)
             {
