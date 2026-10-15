@@ -1,5 +1,5 @@
 # =====================================================================
-#  Assemble the release zip for v0.1.1.1
+#  Assemble the release zip for v0.1.1.2
 #
 #  发布包 = BepInEx 6.0.0-be.788 官方包
 #         + 打过补丁的 Il2CppInterop.Runtime.dll（上游 PR #277）
@@ -17,7 +17,7 @@ $MOD  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SRC  = Join-Path $MOD 'src\NoExistenceA11y'
 $PKG  = Join-Path $MOD 'package'
 $OUT  = Join-Path $MOD 'dist'
-$REL  = Join-Path $OUT 'NoExistenceA11y-0.1.1.1'
+$REL  = Join-Path $OUT 'NoExistenceA11y-0.1.1.2'
 $BE   = Join-Path $MOD '..\probe\bepinex_be788.zip'
 $PAT  = Join-Path $MOD '..\probe\evidence\Il2CppInterop.Runtime.PATCHED.dll'
 $NVDA = 'D:\DSHWorkBase\transparenther_a11y\mod\nvda_dl\x64\nvdaControllerClient.dll'
@@ -69,6 +69,52 @@ foreach ($must in @('THIRD-PARTY-NOTICES.txt', 'il2cppinterop-pr277.patch')) {
 }
 
 Write-Host ""
+# ---- ZDSR (Zhengdu screen reader) API dll: bundled as a FALLBACK -------------
+# The plugin looks for the dll in this order: registry-registered install dir ->
+# default install dirs -> this bundled copy -> the game dir (official guidance is
+# to prefer the install dir, so a bundled copy is only a fallback). It is bundled
+# for users who cannot find the dll on their own machine.
+# Two safeguards: 1) the install-dir copy always wins; 2) if the bundled copy is
+# stale, InitTTS returns 1 (version mismatch) and the plugin moves on to the next
+# candidate automatically. Deleting these two files restores "install dir only".
+function Get-ZdsrInstallDirs {
+    $dirs = @()
+    foreach ($hive in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')) {
+        Get-ChildItem $hive -ErrorAction SilentlyContinue | ForEach-Object {
+            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+            if ($p -and $p.DisplayName -and $p.InstallLocation -and
+                ($p.DisplayName -match 'zdsr' -or [int[]][char[]]$p.DisplayName -contains 20105)) {
+                $dirs += ([string]$p.InstallLocation).TrimEnd('\')
+            }
+        }
+    }
+    foreach ($pf in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+        if ($pf) { $dirs += (Join-Path $pf 'zdsr\zdsr') }
+    }
+    return ($dirs | Select-Object -Unique)
+}
+$zdsrSrc = $null
+foreach ($d in (Get-ZdsrInstallDirs)) {
+    if ((Test-Path (Join-Path $d 'ZDSRAPI_x64.dll')) -or (Test-Path (Join-Path $d 'ZDSRAPI.dll'))) { $zdsrSrc = $d; break }
+}
+if ($zdsrSrc) {
+    $dst = Join-Path $REL 'BepInEx\plugins'
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    foreach ($f in @('ZDSRAPI_x64.dll', 'ZDSRAPI.dll')) {
+        $s = Join-Path $zdsrSrc $f
+        if (Test-Path -LiteralPath $s) {
+            Copy-Item $s -Destination $dst -Force
+            $h = (Get-FileHash $s -Algorithm SHA256).Hash.Substring(0, 16)
+            Write-Host ("    [zdsr] bundled {0} ({1:N0} bytes, sha256:{2}...)" -f $f, (Get-Item $s).Length, $h)
+        }
+    }
+    Write-Host "    [zdsr] fallback copy bundled; the install-dir copy still wins"
+} else {
+    Write-Host "    [zdsr] no ZDSR install found - no fallback copy in this package" -ForegroundColor Yellow
+}
 Write-Host "=== 3. sanity checks ==="
 $need = @(
   'winhttp.dll',

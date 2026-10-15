@@ -218,7 +218,12 @@ licenses\                   ← 新增（第三方组件的许可证与声明，
   「该项当前不可用」），并在进入时先说一句「这一屏的控件当前都不可用」
 - 语音朗读依赖所选后端（NVDA / Tolk / 争渡读屏 / SAPI），用 SAPI 兜底时系统里要有中文语音。
   争渡这一级要求本机装有争渡读屏，且是**商业版 / 青春版**（公益档没有 API 权限，
-  `GetSpeakState()` 恒为 2，会被**如实判为不可用**）；它**不需要**你往游戏目录放任何文件
+  `GetSpeakState()` 恒为 2，会被**如实判为不可用**）；它**不需要**你往游戏目录放任何文件 ——
+  补丁会读注册表**自动找到争渡的安装目录**（装在别的盘也算数），
+  发布 zip 里另外带了一份**可删的兜底** `ZDSRAPI_x64.dll` / `ZDSRAPI.dll`
+- **本作没有用当前这一版跑过**：自动查找安装目录、以及「包内那份过期就换下一份」
+  这两条新路径，只在平台层自检（71 条断言 0 失败）、平台层编译检查（0 错误 0 警告）
+  与构建里验证过，**没有在游戏里走过**
 
 ---
 
@@ -285,7 +290,7 @@ MD5 都是 `EE5E955912E72D2E83F8E076B10BEFFF`；
 │  │  ├─ TextProc.cs            ruby 双读、标签剥离、行键与指纹
 │  │  ├─ Speech.cs              NVDA / Tolk / 争渡 / SAPI 后端调度
 │  │  ├─ Nvda.cs                NVDA Controller Client 封装
-│  │  ├─ Zdsr.cs                争渡读屏（ZDSR）ZDSRAPI 封装（从争渡安装目录加载）
+│  │  ├─ Zdsr.cs                争渡读屏（ZDSR）ZDSRAPI 封装（注册表找安装目录 + 运行时加载）
 │  │  ├─ Hotkey.cs              「修饰键+主键」解析与边沿检测（切换后端键用）
 │  │  ├─ Sapi.cs                Windows 内置语音（纯 P/Invoke 直调 ISpVoice）
 │  │  ├─ VoiceLineIds.cs        849 个有配音的行键（生成物）
@@ -496,9 +501,19 @@ BepInEx 官方 zip 里**一个许可证文件都不带**，所以这些得我们
 | `dobby.dll` | [BepInEx/Dobby](https://github.com/BepInEx/Dobby) | 1.0.5 | Apache-2.0 |
 | `winhttp.dll` | [NeighTools/UnityDoorstop](https://github.com/NeighTools/UnityDoorstop) | 4.5.0 | **LGPL-2.1** |
 | `nvdaControllerClient.dll` | NV Access Controller Client | API 2.0 | **LGPL-2.1** |
+| `ZDSRAPI_x64.dll` / `ZDSRAPI.dll` | 争渡读屏（ZDSR）—— **不是我们的产物** | 取自打包机上的争渡安装目录 | 见下 |
 | `dotnet\`（约 180 个文件） | [BepInEx/dotnet-runtime](https://github.com/BepInEx/dotnet-runtime) | 6.0.7 mini-coreclr | MIT |
 
 完整版权行与各许可证全文见 [`mod/licenses/`](mod/licenses/)。
+
+> **`ZDSRAPI_x64.dll` / `ZDSRAPI.dll` 是唯一的例外**：它们**不在上面任何一项的
+> 许可证框架内**，是**争渡读屏**的产物，权利人不是我们。随包只为**兜底**
+> （补丁优先从争渡安装目录加载）。我们**未经修改**地原样再分发，用途限于这个
+> **免费、非商业**的补丁；依据是争渡官方 API 文档自己写的那句「应用程序……
+> 或者直接把 dll 复制到指定的目录调用均可」。我们与争渡官方**没有隶属关系，
+> 也没有取得书面许可**。**删掉这两个文件即可**（补丁回到只读安装目录）。
+> 详见 [`mod/licenses/THIRD-PARTY-NOTICES.txt`](mod/licenses/THIRD-PARTY-NOTICES.txt)
+> 组件清单里单列的那一项。
 
 ### 两件必须说明的事
 
