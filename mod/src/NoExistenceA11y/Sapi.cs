@@ -126,7 +126,7 @@ namespace NoExistenceA11y
                 int hrVol = getVolume(p, out vol);
 
                 _voice = p;
-                log.LogInfo("语音后端: SAPI（没检测到读屏软件，用系统语音朗读；语速="
+                if (log != null) log.LogInfo("语音后端: SAPI（没检测到读屏软件，用系统语音朗读；语速="
                     + (hrRate == 0 ? rate.ToString() : "读取失败 0x" + hrRate.ToString("X8"))
                     + "，音量=" + (hrVol == 0 ? vol.ToString() : "读取失败 0x" + hrVol.ToString("X8"))
                     + "）");

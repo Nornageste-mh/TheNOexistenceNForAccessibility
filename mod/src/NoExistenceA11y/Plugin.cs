@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.1.1.0";
+        public const string Version = "0.1.1.1";
 
         internal static ManualLogSource L;
 
@@ -37,6 +37,9 @@ namespace NoExistenceA11y
         internal static ConfigEntry<string> CfgVoicedSpeakers;
         internal static ConfigEntry<string> CfgSpeechBackend;
         internal static ConfigEntry<string> CfgRepeatKey;
+
+        /// <summary>运行中切换语音后端的按键（支持 Alt+Shift+F9 这类写法）。</summary>
+        internal static ConfigEntry<string> CfgBackendKey;
         internal static ConfigEntry<bool> CfgSpeechInterrupt;
         internal static ConfigEntry<bool> CfgStopOnVoiced;
         internal static ConfigEntry<string> CfgSilenceKey;
@@ -174,7 +177,13 @@ namespace NoExistenceA11y
                 "按「重读键」（退格）随时能把它念出来，所以代价可控。\n" +
                 "留空可停用（退回到只按行号白名单判断）。");
             CfgSpeechBackend = Config.Bind("朗读", "语音后端", "自动",
-                "自动 / NVDA / Tolk / SAPI。填具体值可强制只用那一个（排查用）。");
+                "自动 / NVDA / Tolk / 争渡 / SAPI。填具体值可强制只用那一个（排查用）。");
+            CfgBackendKey = Config.Bind("朗读", "切换语音后端按键", "F9",
+                "运行中切换语音后端的按键。可写修饰键组合，例如 F9、Alt+Shift+F9、Ctrl+Alt+F9。\n" +
+                "按一下切到下一个「当前可用」的后端（自动 → Tolk → NVDA → 争渡 → SAPI → 自动），\n" +
+                "当前不可用的会被跳过并在播报里说明；选择会写进本配置文件，下次启动仍生效。\n" +
+                "留空则关闭这个功能键。");
+
             CfgRepeatKey = Config.Bind("朗读", "重读键", "Backspace",
                 "按这个键重读最近朗读过的剧情文本。\n" +
                 "连按可以一直往回走（最多记 30 句）；读到新的一句就回到最新。\n" +
@@ -585,6 +594,17 @@ namespace NoExistenceA11y
             Diag("沉默键：" + k + " 已停止朗读");
         }
 
+        /// <summary>
+        /// 运行中切换语音后端（默认 F9；游戏若占用 F9，把配置改成 Alt+Shift+F9）。
+        /// 与重读键分开一个方法：语义不同，失败时日志里也能一眼分清是谁抛的。
+        /// </summary>
+        internal static void CheckBackendHotkey()
+        {
+            string s = CfgBackendKey != null ? CfgBackendKey.Value : "";
+            if (!Hotkey.Down(s)) return;
+            Speech.Speak(Speech.CycleAvailable(), true);
+        }
+
         // ==================== set_Text 触发 ====================
 
         private static string _lastPrint = "";
@@ -788,6 +808,7 @@ namespace NoExistenceA11y
             try { Subtitles.Update(); } catch (Exception e) { Plugin.Diag("Subtitles: " + e.Message); }
             try { NotebookPage.Update(); } catch (Exception e) { Plugin.Diag("NotebookPage: " + e.Message); }
             try { Plugin.CheckRepeatHotkey(); } catch (Exception e) { Plugin.Diag("Repeat: " + e.Message); }
+            try { Plugin.CheckBackendHotkey(); } catch (Exception e) { Plugin.Diag("Backend: " + e.Message); }
             try { Plugin.CheckSilenceHotkey(); } catch (Exception e) { Plugin.Diag("Silence: " + e.Message); }
             try { LoadingWatch.Update(); } catch (Exception e) { Plugin.Diag("Loading: " + e.Message); }
             try { Qte.Update(); } catch (Exception e) { Plugin.Diag("Qte: " + e.Message); }
