@@ -11,32 +11,47 @@ using UnityEngine.UI;
 namespace NoExistenceA11y
 {
     /// <summary>
-    /// 菜单 / 存档 / 设置等界面的键盘导航与朗读。
+    /// 菜单 / 存档 / 设置等界面的键盘操作与朗读。
     ///
-    ///   Tab          进入 / 退出导航模式
+    /// === 操作（没有「导航模式」开关）===
+    ///
+    ///   界面一出现，键盘直接可用，不需要先按任何键「进入」。
+    ///
     ///   上 / 下      上一项 / 下一项
-    ///   左 / 右      调整滑条
-    ///   回车 / 空格  激活（按钮点击、开关切换、输入框聚焦）
     ///   Home / End   第一项 / 最后一项
-    ///   PageUp/PageDown  切换面板组（默认只导航最上层那一组）
+    ///   回车 / 空格  激活当前项（按钮点击、开关切换、输入框聚焦）
+    ///   左 / 右      当前项是滑条时调值（按住了连续调整）
+    ///   退格        重读当前项（由 Plugin 的「重读当前项」入口调用 RepeatCurrent）
     ///
-    /// === 回车 / 空格的归属（状态机，见 F）===
+    ///   对话界面（HUD：设置、回想两个按钮）不自动接管 —— 自动接管会把
+    ///   「回车推进剧情」抢走，而 HUD 上只有鼠标按钮。用「对话界面按钮热键」
+    ///   （默认 Alt+M）进 / 出（ToggleHud）。
     ///
-    ///   非导航模式                      → 不归我们，交给游戏推进剧情
-    ///   导航模式 + 当前没有可用控件      → 退出导航，交回游戏推进剧情
-    ///   导航模式 + 当前有可用控件        → 归我们，激活该控件
+    /// === 接管与交还（状态机）===
     ///
-    ///   判定点是「本帧开始时导航模式是否有效且选中项还活着」，
-    ///   而不是「EventSystem 里有没有选中对象」—— 后者会被鼠标点击和
-    ///   游戏的 AutoFocusInputField 干扰，不能用来决定按键归属。
+    ///   空闲时每 0.35 秒扫一次：扫到「可见、可交互的一屏控件」，并且持续
+    ///   0.2 秒，才认为界面打开了、开始接管（IdleDetect → Engage）。
+    ///   界面隐藏 / 控件清空 / 场景切换 → 交还游戏（Disengage）。
+    ///   同一页面 3 秒内重新出现 → 静默恢复，不重复报名。
+    ///   输入框拿到焦点时一个键都不接管，让玩家安心打字。
+    ///
+    /// === 回车 / 空格的归属 ===
+    ///
+    ///   未接管                    → 不归我们，交给游戏推进剧情
+    ///   已接管 + 当前项还活着      → 归我们，激活当前项，并拦住游戏本帧的推进
+    ///   已接管 + 当前项没了        → 当场重扫；重扫完仍没有就交还游戏
+    ///
+    ///   判定依据是「本帧开始时是否在接管」，不是「EventSystem 里有没有
+    ///   选中对象」—— 后者会被鼠标点击和游戏自己的焦点逻辑干扰，不能用来
+    ///   决定按键归属。
     ///
     /// === 设计约束（每条都对应一次实测故障）===
     ///
-    /// A) 【只导航最上层面板组】
+    /// A) 【只操作最上层面板组】
     ///    实测存档界面一次能扫到 13~20 个控件，其中只有 5 个是存档槽，
     ///    其余是设置页签、画廊等无关按钮，读屏用户要在一堆噪声里找目标。
-    ///    现在按「Canvas 下的顶层祖先」分组，默认只进入渲染层级最高的
-    ///    那一组，用 PageUp/PageDown 手动切换。
+    ///    现在按「Canvas 下的顶层祖先」分组，只接管渲染层级最高的那一组
+    ///    （列表恒取 Groups[0]），不再提供手动切组键。
     ///
     /// B) 【排序按完整渲染路径，而不是只看屏幕坐标】
     ///    确认框是覆盖层：LoadSlotUI.OnSaveSlotClicked 直接
@@ -50,34 +65,35 @@ namespace NoExistenceA11y
     ///    「无存档」，用户无法区分，表现就像「每页只能选一个槽」。
     ///    现在把不同的文本拼起来（最多 3 段）。
     ///
-    /// D) 【绝不定时重扫 + 场景切换必须复位】
+    /// D) 【重扫必须按帧、且过场景门禁】
     ///    v0.3.0 曾在激活按钮后 0.35 秒重扫界面。「开始游戏」「读档」会立刻
     ///    SceneManager.LoadSceneAsync，重扫恰好落在场景销毁/激活瞬间，
     ///    对正在销毁的 Selectable 调用 FindObjectsOfTypeAll 会触发
     ///    无 C# 异常的原生崩溃。
-    ///    现在只在激活后的「下一帧」重扫（旧场景仍完整存活），
-    ///    且必须通过 SceneStable 门禁。
+    ///    现在激活后只排「下一帧」和「14 帧后」两次重扫（旧场景仍完整存活），
+    ///    且必须通过 SceneStable 门禁；接管期间另有每 1 秒一次的重扫，也只
+    ///    用于发现页面更换。
     ///
     /// E) 【恢复视觉反馈】
     ///    用 EventSystem.SetSelectedGameObject 让游戏自己的按钮高亮态生效。
     ///
-    /// F) 【按键归属必须是显式的，不能靠「有没有选中对象」推断】
-    ///    实测：退出导航模式后按空格推进剧情，会把上一次导航到的那个按钮
-    ///    又点一遍。原因是 EventSystem.currentSelectedGameObject 在我们退出后
+    /// F) 【按键归属显式化；uGUI 的 submit 只在接管期间关上】
+    ///    实测：退出操作后按空格推进剧情，会把上一次操作到的那个按钮又点
+    ///    一遍。原因是 EventSystem.currentSelectedGameObject 在我们退出后
     ///    仍然指着那个按钮，而 StandaloneInputModule 一见回车/空格就向它发
     ///    submit。鼠标点过的按钮同理（Selectable.OnPointerDown 会自动选中自己）。
     ///
     ///    现在改成两件事：
-    ///      1) 常驻把 EventSystem.sendNavigationEvents 置 false（见 KeepUnitySubmitOff），
-    ///         让 uGUI 那条 submit 通路彻底不存在；
-    ///      2) 回车/空格在我们自己手里时才算「提交」（见 Update 里的状态机），
-    ///         并且同一帧拦住游戏自身那次多余的推进（见 BlockGameAdvance）。
+    ///      1) 只在接管期间把 EventSystem.sendNavigationEvents 置 false
+    ///         （见 SuppressUguiNav），交还时原样还原 —— 不再全局常驻关闭；
+    ///      2) 回车/空格在我们自己手里时才算「提交」（见 Update 里的状态机）：
+    ///         游戏自身那次「继续/提交」由 Naninovel 的输入屏蔽挡住
+    ///         （AddBlockingUI "Continue"/"Submit"，见 BlockPageGameInput）。
     ///
-    ///    为什么常驻关闭 submit 是安全的：全游戏代码里没有任何一处
+    ///    为什么关掉 uGUI 的 submit 是安全的：全游戏代码里没有任何一处
     ///    SetSelectedGameObject，游戏自己并不依赖 EventSystem 选中态；
     ///    它的剧情推进、输入框确认、Esc 返回全部是自己读 Input.GetKeyDown。
     ///    鼠标点按走 pointer 事件，不受这个开关影响。
-    ///    游戏自己播视频时也用同一个开关关掉提交（VideoPanelManager）。
     /// </summary>
     internal static class UiNav
     {
@@ -132,9 +148,13 @@ namespace NoExistenceA11y
         }
 
         private static readonly List<Group> Groups = new List<Group>();
-        private static int _groupIndex;
-        private static List<Component> Items { get { return Groups[_groupIndex].Items; } }
+        private static readonly List<Component> EmptyItems = new List<Component>();
+        private static List<Component> Items
+        {
+            get { return Groups.Count > 0 ? Groups[0].Items : EmptyItems; }
+        }
 
+        // 界面操作此刻是否接管（取代原来的「Tab 导航模式」开关）
         private static bool _active;
         private static int _index;
         private static int _pendingRescanFrame = -1;
@@ -143,11 +163,6 @@ namespace NoExistenceA11y
 
         // 视觉反馈用：我们自己借 EventSystem 选中过的对象，退出时要清掉
         private static GameObject _selectedByUs;
-
-        // 「提交键」状态机：本帧是否已由我们处理，以及是否正在执行我们发起的动作
-        private static int _submitHandledFrame = -1;
-        private static bool _inOurActivation;
-
         // 上一次朗读过的控件。重扫后如果这个位置换了别的控件，必须重新播报 ——
         // 否则玩家以为还停在刚才听的那一项上，按下去却是另一个东西。
         private static Component _announcedItem;
@@ -158,220 +173,565 @@ namespace NoExistenceA11y
         // 「当前项已经死掉」这类失效的重扫节流（见 Update 里那一段）
         private static float _nextDeadRescan;
 
+        // 滑条按住连续调整：首延迟 0.45 秒，之后每 0.12 秒一步（0→100% 不用按 20 次）
+        private static int _repDir;
+        private static float _repAt;
+        private const float RepeatFirstDelay = 0.45f;
+        private const float RepeatInterval = 0.12f;
+
         // 场景切换防护
         private static int _lastSceneHandle = int.MinValue;
         private static float _sceneChangedAt = float.NegativeInfinity;
         private const float SceneSettleSeconds = 1.5f;
 
-        public static bool Active { get { return _active; } }
+        // ---- 自动接管界面（无模式键）----
+        private static float _nextIdleScan;            // 下一次「空闲扫描」的时间
+        private static float _candidateSince = -1f;    // 候选页面第一次被看到的时间
+        private static Transform _pageRoot;            // 当前页面的分组根
+        private static string _pageKey = "";           // 当前页面身份（控件公共祖先的路径）
+        private static string _pageLabel = "";         // 当前页面的人话名字
+        private static float _nextEngagedScan;         // 接管期间的定期重扫（捕捉鼠标引起的界面变化）
+        private static float _lastExitAt = float.NegativeInfinity;
+        private static string _lastExitKey = "";
 
-        // ================= 进入 / 退出 =================
+        // uGUI 导航总开关：只在接管期间关掉，退出时原样还原
+        private static bool _navEventsSaved;
+        private static bool _navEventsPrev = true;
 
-        public static void Toggle()
-        {
-            if (_active) ExitInternal(true);
-            else Enter();
-        }
+        // 「已激活」延迟播报：按钮动作没有换页面时才补一声，不抢新页面的播报
+        private static string _pendingActivationLabel;
+        private static string _pendingActivationPage = "";
+        private static float _pendingActivationAt = -1f;
 
-        // 进场重试：界面常常是"淡入 / 滑入"出来的，刚出现那一瞬控件的 alpha 还是 0
-        // 或还在画面外，严格可见性判定会把它们全筛掉 —— 那时按 Tab 就白按了。
-        // 实测（作者 2026-09-27 日志）：同一个选项框，早按一次「最终纳入=0 → Tab 进入导航失败」，
-        // 晚按一次就正常 —— 玩家的体感正是「有时候行有时候不行」。
-        private static int _enterRetry;
-        private static float _retryEnterAt = -1f;
+        // 手动接管「对话界面按钮」（游戏只给了鼠标入口，见 ToggleHud）
+        private static bool _hudMode;
 
-        private static void Enter()
-        {
-            if (!SceneStable())
-            {
-                Speech.Speak("场景正在切换，请稍候再试。", true);
-                return;
-            }
+        // HUD 扫描开关：HudEnter 扫描时让 NonMenu 放行 ControlUI；
+        // 平时自动接管仍把 ControlUI 排除在外（否则回车会抢去点 HUD、剧情推不动）。
+        private static bool _scanHud;
 
-            Scan();
-            if (Groups.Count == 0 || Items.Count == 0)
-            {
-                // ★ 进不去也要留痕：以前这一步是静默的，于是"按了 Tab 没反应"在日志里
-                //   和"根本没按 Tab"长得一模一样（作者复测时就因此无法判断）。
-                //
-                // 界面可能还在进场动画里 —— 重试几次（约 1 秒）再下结论。
-                if (_enterRetry < 3)
-                {
-                    _enterRetry++;
-                    DiagScan("Tab 进入导航失败：扫到 0 项，0.35 秒后重试 " + _enterRetry + "/3");
-                    _retryEnterAt = Time.realtimeSinceStartup + 0.35f;
-                    return;
-                }
-                _enterRetry = 0;
-                DiagScan("Tab 进入导航失败：扫到 0 项（重试 3 次仍为空）");
-                Speech.Speak("当前界面上没有可操作的项目。", true);
-                return;
-            }
-            _enterRetry = 0;
-            _retryEnterAt = -1f;
-
-            _active = true;
-            _index = 0;
-            SyncInputBlock();          // 按"屏幕上有没有选项框"决定要不要屏蔽游戏输入
-            AnnounceGroup(true);
-        }
-
-        private static void ExitInternal(bool announce)
-        {
-            _active = false;
-            Groups.Clear();
-            _index = 0;
-            _pendingRescanFrame = -1;
-            _announcedItem = null;
-            ClearQuitConfirm();
-            ReleaseSelection();
-            BlockGameInput(false);
-            if (announce)
-            {
-                try { Speech.Speak("已退出导航模式。", true); } catch { }
-            }
-        }
-
-        // ================= 导航模式下屏蔽游戏自身的输入 =================
-
-        private static bool _inputBlocked;
+        // 接管期间把当前页面登记成「挡住 Continue/Submit」的 Naninovel UI（引擎官方机制）：
+        // 这样回车/空格只激活我们的控件，不会顺手推进一句剧情；Esc（Cancel）不受影响。
+        private static Naninovel.UI.IManagedUI _blockedUi;
+        private static bool _blockedFallback;
         private static bool _prevProcessInput = true;
 
+        // 滑条连发播报节流：值每 0.12 秒变一步，语音每 3 步念一次、松键再念终值
+        private static int _repSteps;
+        private static bool _repActive;
+        private static bool _repEndSaid;
+
+        public static bool Active { get { return _active; } }
+        internal static bool HudMode { get { return _hudMode; } }
+
+        // ================= 自动接管 / 交还 =================
+
         /// <summary>
-        /// 导航模式期间把 Naninovel 的输入总开关关掉。
-        ///
-        /// 为什么需要：回车/空格同时是「激活当前控件」和「推进剧情」。
-        /// 不屏蔽的话，在回想面板里按回车重念一句，剧情会跟着往前走一格 ——
-        /// 玩家只是想重听，结果位置变了。
-        ///
-        /// 用的是引擎自己的接口 `IInputManager.ProcessInput`，不是去 patch 游戏代码：
-        ///   · 它是官方提供的「暂停处理输入」总闸，语义正好
-        ///   · 完全可逆，退出导航就还原
-        ///   · 进入时**记下当时的值**再改，退出时还原成记下的那个值 ——
-        ///     这样不会覆盖游戏自己因为别的原因（比如播片）关掉的输入
+        /// 对话期的界面按钮（设置、回想）被排除在自动接管之外（否则回车会被
+        /// 抢去点按钮，剧情就推不动了），但游戏又没有键盘入口，所以给一个
+        /// 显式功能键：按一下接管这一屏按钮，再按一下交还。
         /// </summary>
-        private static void BlockGameInput(bool block)
+        public static void ToggleHud()
+        {
+            if (_active && _hudMode) { Disengage(true); return; }
+            HudEnter();
+        }
+
+        private static void HudEnter()
+        {
+            // 对话 HUD（ControlUI）平时在「非菜单界面」排除名单里 —— 那是为了别自动
+            // 抢走回车；手动按了热键就临时放行这一组，只收 ControlUI。
+            _scanHud = true;
+            try { Scan(); }
+            finally { _scanHud = false; }
+
+            if (Groups.Count == 0 || Items.Count == 0)
+            {
+                Speech.Speak("当前没有可以操作的界面按钮。", true);
+                return;
+            }
+            Engage(true);
+        }
+
+        private static void Engage(bool hud)
+        {
+            if (Groups.Count == 0 || Items.Count == 0) return;
+
+            _active = true;
+            _hudMode = hud || PageIsHud();
+            _index = 0;
+            _pageRoot = Groups[0].Root;
+            _pageKey = PageKey();
+            _pageLabel = PageLabel();
+            _nextEngagedScan = Time.realtimeSinceStartup + 1.0f;
+            ResetRepeatState();
+            SuppressUguiNav(true);
+            BlockPageGameInput(true);
+
+            DiagScan((hud ? "手动接管对话界面：" : "自动接管界面：")
+                + _pageLabel + "，共 " + Items.Count + " 项");
+
+            // 刚刚才退出同一个页面（例如关掉一个确认框又回到设置）→ 不重复报页面名，
+            // 只报当前项，免得玩家以为又跳到了别的地方。
+            bool silent = !hud && _pageKey == _lastExitKey
+                && Time.realtimeSinceStartup - _lastExitAt < 3f;
+            if (silent) Announce(null, false);
+            else AnnouncePage(true, !hud);
+        }
+
+        private static void Disengage(bool announce)
+        {
+            bool was = _active;
+            bool wasHud = _hudMode;
+            _active = false;
+            _hudMode = false;
+            _index = 0;
+            _pendingRescanFrame = -1;
+            _pendingRescanFrame2 = -1;
+            _announcedItem = null;
+            _pendingActivationAt = -1f;
+            _pendingActivationLabel = null;
+            _candidateSince = -1f;
+            ResetRepeatState();
+            ClearQuitConfirm();
+            ReleaseSelection();
+            SuppressUguiNav(false);
+            BlockPageGameInput(false);
+            if (was)
+            {
+                _lastExitAt = Time.realtimeSinceStartup;
+                _lastExitKey = _pageKey;
+            }
+            _pageRoot = null;
+            _pageKey = "";
+            _pageLabel = "";
+            if (announce)
+            {
+                try { Speech.Speak("已退出界面操作。", !wasHud); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// 把当前页面登记成「挡住 Continue/Submit」的 Naninovel UI，接管结束再撤销。
+        ///
+        /// 为什么需要：0.2.0.0 不再全局屏蔽游戏输入（旧导航模式那样做副作用太大，
+        /// 连 Esc 都按不动）。但界面开着时，游戏自己的「继续/提交」采样仍可能被
+        /// 同一个按键触发 —— 一次回车既激活按钮、又推进一句剧情。这里用引擎自己的
+        /// AddBlockingUI 只挡 Continue/Submit 两个动作：Esc（Cancel）不受影响，
+        /// 鼠标点击也不受影响。拿不到当前页的 IManagedUI 时，退回「临时关 ProcessInput」。
+        /// </summary>
+        private static void BlockPageGameInput(bool block)
         {
             try
             {
-                if (Plugin.CfgNavBlockInput != null && !Plugin.CfgNavBlockInput.Value) return;
-
-                var im = Naninovel.Engine.GetService<Naninovel.IInputManager>();
+                Naninovel.IInputManager im = Naninovel.Engine.GetService<Naninovel.IInputManager>();
                 if (im == null) return;
-
                 if (block)
                 {
-                    if (_inputBlocked) return;
-                    _prevProcessInput = im.ProcessInput;
-                    im.ProcessInput = false;
-                    _inputBlocked = true;
-                    Plugin.Diag("导航模式：已屏蔽游戏输入（原值 " + _prevProcessInput + "）");
+                    if (_blockedUi != null || _blockedFallback) return;
+                    _blockedUi = FindManagedUi(Groups.Count > 0 ? Groups[0].Root : null);
+                    if (_blockedUi != null)
+                    {
+                        im.AddBlockingUI(_blockedUi, new string[] { "Continue", "Submit" });
+                    }
+                    else
+                    {
+                        _prevProcessInput = im.ProcessInput;
+                        im.ProcessInput = false;
+                        _blockedFallback = true;
+                    }
                 }
                 else
                 {
-                    if (!_inputBlocked) return;
-                    im.ProcessInput = _prevProcessInput;
-                    _inputBlocked = false;
-                    Plugin.Diag("导航模式：已还原游戏输入（" + _prevProcessInput + "）");
+                    try
+                    {
+                        if (_blockedUi != null) im.RemoveBlockingUI(_blockedUi);
+                        else if (_blockedFallback) im.ProcessInput = _prevProcessInput;
+                    }
+                    catch { }
+                    _blockedUi = null;
+                    _blockedFallback = false;
                 }
             }
-            catch (Exception e)
+            catch
             {
-                _inputBlocked = false;
-                Plugin.Diag("屏蔽游戏输入失败: " + e.GetType().Name + ": " + e.Message);
+                _blockedUi = null;
+                _blockedFallback = false;
             }
         }
 
-        /// <summary>
-        /// 每帧维护「游戏输入要不要屏蔽」。
-        ///
-        /// ★ 选项框在场时**必须放行**。实测（作者 2026-09-27）：
-        /// 屏蔽着的时候，导航模式里回车点选项**经常没反应**，同一个选项要按三次才生效；
-        /// 把这一项关掉就稳定了 —— Naninovel 处理选项本身要过这个总闸。
-        /// 所以改成按"当前屏幕上有没有选项框"动态决定：
-        ///   · 选项框在 → 放行（否则选项点不动）
-        ///   · 只有对话 → 屏蔽（这才是当初引入它的原因：别让回车同时把剧情往前推一格）
-        /// 配置「导航时屏蔽游戏输入」关掉时，这里整个不生效（保持游戏原有状态）。
-        /// </summary>
-        private static void SyncInputBlock()
+        private static Naninovel.UI.IManagedUI FindManagedUi(Transform t)
         {
-            if (!_active) return;
-            if (Plugin.CfgNavBlockInput != null && !Plugin.CfgNavBlockInput.Value) return;
-
-            bool want = !Choices.Live;      // 选项框不在场才屏蔽
-            if (want == _inputBlocked) return;
-
             try
             {
-                var im = Naninovel.Engine.GetService<Naninovel.IInputManager>();
-                if (im == null) return;
-
-                if (want)
+                if (t == null) return null;
+                var mbs = t.GetComponentsInParent<MonoBehaviour>(true);
+                for (int i = 0; i < mbs.Length; i++)
                 {
-                    _prevProcessInput = im.ProcessInput;
-                    im.ProcessInput = false;
-                    _inputBlocked = true;
-                    Plugin.Diag("导航模式：选项框不在场 → 屏蔽游戏输入（原值 " + _prevProcessInput + "）");
-                }
-                else
-                {
-                    im.ProcessInput = _prevProcessInput;
-                    _inputBlocked = false;
-                    Plugin.Diag("导航模式：选项框在场 → 放行游戏输入（否则选项点不动）");
+                    var ui = As<Naninovel.UI.IManagedUI>(mbs[i]);
+                    if (ui != null) return ui;
                 }
             }
-            catch (Exception e)
-            {
-                _inputBlocked = false;
-                Plugin.Diag("维护输入屏蔽失败: " + e.GetType().Name);
-            }
+            catch { }
+            return null;
         }
 
+        private static void ResetRepeatState()
+        {
+            _repDir = 0;
+            _repAt = 0f;
+            _repSteps = 0;
+            _repActive = false;
+            _repEndSaid = false;
+        }
+
+        /// <summary>松键时补念一次终值（连发过程中为了不打断语音，每 3 步才念一次）。</summary>
+        private static void SpeakSliderNow()
+        {
+            if (!_active || Groups.Count == 0 || Items.Count == 0) return;
+            Component item = Items[Mathf.Clamp(_index, 0, Items.Count - 1)];
+            Slider sl = As<Slider>(item);
+            if (sl == null) return;
+            string label = TextOf(item);
+            if (string.IsNullOrEmpty(label)) label = "这一项";
+            Speech.Speak(label + "，" + SliderValueText(sl) + "。", true);
+        }
+
+
+        /// <summary>重读当前项（退格键共用那个出口）。返回 false = 当前没接管界面，去重读台词。</summary>
+        internal static bool RepeatCurrent()
+        {
+            if (!_active || Items.Count == 0) return false;
+            Announce(null);
+            return true;
+        }
+
+        // ================= 自动接管界面所需的判定 =================
+
         /// <summary>
-        /// 常驻关掉 uGUI 的键盘导航/提交通路。
+        /// 接管界面期间关掉 uGUI 的「键盘导航/提交」通路，退出时还原。
         ///
-        /// 为什么是常驻而不是「只在导航模式里」：
-        ///   游戏的推进剧情是自己在 Update 里读 Input.GetKeyDown(空格/回车) 的。
-        ///   而 StandaloneInputModule 也会在回车/空格时向「当前选中对象」发一次
-        ///   submit。只要之前有任何控件被选中过——鼠标点过、游戏自己的
-        ///   AutoFocusInputField.Select()、或者我们退出导航后残留的选中态——
-        ///   按空格推进剧情就会顺手把那个控件再点一次。
+        /// 为什么必须关：我们自己设了 EventSystem 选中态（为了让游戏自己的高亮生效），
+        /// 而 StandaloneInputModule 会在回车/空格时向选中对象发一次 submit ——
+        /// 我们同时又直接调 onClick，等于一次按键点两下。
         ///
-        ///   本模组的语义是：回车/空格只在导航模式里、且有选中项时才算提交，
-        ///   其余一律归还给游戏。所以这条通路必须一直关着。
-        ///
-        /// 代价与安全性：
-        ///   - 失去 uGUI 原生的方向键导航 —— 那正是本导航模式要替代的东西。
-        ///   - 鼠标点按走 pointer 事件，不受影响。
-        ///   - 输入框打字走 TMP_InputField 自己读 Input，不受影响；
-        ///     游戏确认输入框也是自己读 Input.GetKeyDown(Return)。
-        ///   - 游戏全代码没有一处 SetSelectedGameObject，本就不依赖选中态。
-        ///   - 新场景的 EventSystem 默认是 true，所以每帧都要重申一次。
-        ///
-        /// 由 Plugin.Update 无条件调用（不受「菜单键盘导航」开关影响）：
-        /// 这条通路一旦松开，鼠标点过的按钮就会在按空格推进剧情时被重复点击。
+        /// 只在接管期间关、退出还原（不再像旧版那样每帧常驻关闭）：
+        /// 常驻关会让「关掉补丁行为不变」这个承诺落空，也会掩盖游戏自己的问题。
         /// </summary>
-        internal static void KeepUnitySubmitOff()
+        private static void SuppressUguiNav(bool suppress)
         {
             try
             {
                 EventSystem es = EventSystem.current;
                 if (es == null) return;
-                if (es.sendNavigationEvents) es.sendNavigationEvents = false;
+                if (suppress)
+                {
+                    if (_navEventsSaved) return;
+                    _navEventsPrev = es.sendNavigationEvents;
+                    _navEventsSaved = true;
+                    if (es.sendNavigationEvents) es.sendNavigationEvents = false;
+                }
+                else
+                {
+                    if (!_navEventsSaved) return;
+                    es.sendNavigationEvents = _navEventsPrev;
+                    _navEventsSaved = false;
+                }
             }
-            catch { }
+            catch { _navEventsSaved = false; }
         }
 
-        /// <summary>清掉我们自己设的选中态，去掉高亮、也不给 uGUI 留提交目标。</summary>
+        /// <summary>是否正有输入框在打字（供外部热键避开退格等编辑键）。</summary>
+        internal static bool InputFieldActive { get { return InputFieldFocused(); } }
+
+        /// <summary>输入框（TMP_InputField）拿到焦点时，我们一个键都不接管，让玩家安心打字。</summary>
+        private static bool InputFieldFocused()
+        {
+            try
+            {
+                // 先看 EventSystem 当前选中：界面里可能同时有两个输入框（姓名界面），
+                // FindObjectOfType 可能拿到另一个没聚焦的，导致「在打字却仍抢键」。
+                EventSystem es = EventSystem.current;
+                if (es != null)
+                {
+                    GameObject cur = es.currentSelectedGameObject;
+                    if (cur != null)
+                    {
+                        TMP_InputField inf = cur.GetComponentInParent<TMP_InputField>();
+                        if (inf != null && inf.isFocused) return true;
+                    }
+                }
+
+                // 兜底：某些输入框没有走 EventSystem 选中态，扫一遍真正 isFocused 的那个。
+                var all = Resources.FindObjectsOfTypeAll<TMP_InputField>();
+                for (int i = 0; i < all.Length; i++)
+                {
+                    TMP_InputField f = all[i];
+                    if (f == null || f.gameObject == null) continue;
+                    if (f.gameObject.activeInHierarchy && f.isFocused) return true;
+                }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>当前页面的分组根是否还活着（还显示着）。</summary>
+        private static bool PageStillAlive()
+        {
+            try
+            {
+                if (Groups.Count == 0) return false;
+                Transform root = Groups[0].Root;
+                if (root == null) return false;
+                if (root.gameObject == null || !root.gameObject.activeInHierarchy) return false;
+                return !AlphaHidden(root);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 当前页面的身份：页面内所有控件的**公共祖先**路径。
+        ///
+        /// 不用分组根的原因：分组根是「Canvas 下的第一层孩子」（例如 UI / ModalUI），
+        /// 一个根下可能同时住着好几个面板；而公共祖先能精确到面板本身，
+        /// 用来判断「还是同一页吗」和「换页了吗」。
+        /// </summary>
+        private static string PageKey()
+        {
+            try
+            {
+                Transform common = null;
+                for (int i = 0; i < Items.Count; i++)
+                {
+                    Component c = Items[i];
+                    if (c == null) continue;
+                    Transform ct = c.transform;
+                    if (ct == null) continue;
+                    common = common == null ? ct : CommonAncestor(common, ct);
+                    if (common == null) break;
+                }
+                if (common != null) return PathOf(common);
+            }
+            catch { }
+            try
+            {
+                if (Groups.Count > 0 && Groups[0].Root != null) return PathOf(Groups[0].Root);
+            }
+            catch { }
+            return "";
+        }
+
+        private static Transform CommonAncestor(Transform a, Transform b)
+        {
+            try
+            {
+                Transform x = a;
+                int guard = 0;
+                while (x != null && guard++ < 48)
+                {
+                    Transform y = b;
+                    int guard2 = 0;
+                    while (y != null && guard2++ < 48)
+                    {
+                        if (x == y) return x;
+                        y = y.parent;
+                    }
+                    x = x.parent;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>页面的人话名字（从控件路径里认面板；认不出就叫「当前界面」）。</summary>
+        private static string PageLabel()
+        {
+            if (_hudMode) return "对话界面按钮";
+            try
+            {
+                string path = PageKey();
+                if (path.IndexOf("BacklogFakeUI", StringComparison.OrdinalIgnoreCase) >= 0) return "笔记本";
+                if (path.IndexOf("BacklogUI", StringComparison.OrdinalIgnoreCase) >= 0) return "回想";
+                if (path.IndexOf("SettingsUI", StringComparison.OrdinalIgnoreCase) >= 0
+                    || path.IndexOf("GameSettings", StringComparison.OrdinalIgnoreCase) >= 0) return "设置界面";
+                if (path.IndexOf("TitleUI", StringComparison.OrdinalIgnoreCase) >= 0
+                    || path.IndexOf("TitleMenu", StringComparison.OrdinalIgnoreCase) >= 0) return "标题画面";
+                if (path.IndexOf("Confirmation", StringComparison.OrdinalIgnoreCase) >= 0) return "确认";
+                if (path.IndexOf("SaveLoad", StringComparison.OrdinalIgnoreCase) >= 0) return "存档读档";
+                if (path.IndexOf("PauseUI", StringComparison.OrdinalIgnoreCase) >= 0) return "暂停界面";
+                if (path.IndexOf("CGGallery", StringComparison.OrdinalIgnoreCase) >= 0) return "画廊";
+                if (path.IndexOf("TipsUI", StringComparison.OrdinalIgnoreCase) >= 0
+                    || path.IndexOf("TipsPanel", StringComparison.OrdinalIgnoreCase) >= 0) return "提示";
+                if (path.IndexOf("ControlUI", StringComparison.OrdinalIgnoreCase) >= 0) return "对话界面按钮";
+                if (path.IndexOf("Phone", StringComparison.OrdinalIgnoreCase) >= 0) return "手机";
+            }
+            catch { }
+            return "当前界面";
+        }
+
+        /// <summary>当前页面是不是对话界面（HUD）那一组按钮。</summary>
+        private static bool PageIsHud()
+        {
+            try
+            {
+                return PageKey().IndexOf("ControlUI", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 这一屏控件属于「不是菜单的东西」（对话 HUD、字幕、跳过提示、载入、过场、QTE）。
+        /// 它们不能自动接管：否则回车会被抢去点 HUD，剧情就推不动了。
+        /// 名单来自配置，用路径片段匹配。
+        /// </summary>
+        private static bool NonMenu(Transform t)
+        {
+            try
+            {
+                string path = PathOf(t);
+                bool hudPath = path.IndexOf("ControlUI", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                // HUD 接管/扫描时反过来：只收 ControlUI，其它「非菜单界面」照旧排除。
+                // （自动接管时 ControlUI 不在此列，见上面注释。）
+                if (_hudMode || _scanHud) return !hudPath;
+
+                var cfg = Plugin.CfgUiMenuExcludePaths;
+                if (cfg == null || string.IsNullOrEmpty(cfg.Value)) return false;
+                string[] frags = cfg.Value.Split(',');
+                for (int i = 0; i < frags.Length; i++)
+                {
+                    string f = frags[i].Trim();
+                    if (f.Length == 0) continue;
+                    if (path.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// 「整屏大按钮」（点击穿透层 / 全屏推进热区）：看得见、但当作导航项毫无意义 ——
+        /// 焦点停在它上面只会让玩家以为界面没东西可点。
+        /// </summary>
+        private static bool FullscreenButton(Component c)
+        {
+            try
+            {
+                if (As<Button>(c) == null) return false;
+                RectTransform rt = AsRect(c.transform);
+                if (rt == null) return false;
+                Rect r = WorldRect(rt);
+                return r.width >= Screen.width * 0.9f && r.height >= Screen.height * 0.9f;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>延迟播报「已激活」：按钮真的换了页面时，新页面的播报已经说明问题。</summary>
+        private static void TickPendingActivation()
+        {
+            if (_pendingActivationAt < 0f) return;
+            if (Time.realtimeSinceStartup < _pendingActivationAt) return;
+            string label = _pendingActivationLabel;
+            string page = _pendingActivationPage;
+            _pendingActivationAt = -1f;
+            _pendingActivationLabel = null;
+            if (!_active || string.IsNullOrEmpty(label)) return;
+            if (page != _pageKey) return;      // 换页了：新页面已经播报过
+            Speech.Speak("已激活「" + label + "」。", false);
+        }
+
+        /// <summary>空闲时的界面侦测：看到界面稳定出现，就自动接管。</summary>
+        private static void IdleDetect()
+        {
+            float now = Time.realtimeSinceStartup;
+            if (now < _nextIdleScan) return;
+            _nextIdleScan = now + 0.35f;
+
+            if (!SceneStable()) { _candidateSince = -1f; return; }
+            // 正在打字（输入框拿着焦点）时不去接管界面
+            if (InputFieldFocused()) { _candidateSince = -1f; return; }
+
+            Scan();
+            if (Groups.Count == 0 || Items.Count == 0 || !PageStillAlive())
+            {
+                _candidateSince = -1f;
+                return;
+            }
+            if (_candidateSince < 0f) { _candidateSince = now; return; }
+            // 面板淡入/滑入时控件会先出现、位置还没稳定，等一小会儿再接
+            if (now - _candidateSince < 0.2f) return;
+            Engage(false);
+        }
+
+        /// <summary>接管期间的重扫：激活后、定期、以及当前项失效时都会走这里。</summary>
+        private static void RescanEngaged(bool activationRescan)
+        {
+            if (!SceneStable()) { Disengage(false); return; }
+
+            string beforePage = _pageKey;
+            Component before = _announcedItem;
+            var beforeList = new List<Component>(Items);
+
+            Scan();
+            if (Groups.Count == 0 || Items.Count == 0)
+            {
+                // HUD 那组按钮可能先藏起来了（例如从 HUD 点进设置）：退出 HUD 语义再扫一次，
+                // 让新出现的菜单页面接上，而不是当场交还键盘、下一轮再自动接管。
+                if (_hudMode)
+                {
+                    _hudMode = false;
+                    Scan();
+                }
+                if (Groups.Count == 0 || Items.Count == 0) { Disengage(false); return; }
+            }
+
+            string nowPage = PageKey();
+            if (nowPage != beforePage)
+            {
+                // 换了页面（打开子菜单、确认框、从 HUD 点进设置……）：接着接管新页面
+                BlockPageGameInput(false);
+                _pageRoot = Groups[0].Root;
+                _pageKey = nowPage;
+                // 从对话 HUD 点进设置后就不再是「操作 HUD」了，热键语义跟着页面走
+                _hudMode = PageIsHud();
+                _pageLabel = PageLabel();
+                _index = 0;
+                ResetRepeatState();
+                BlockPageGameInput(true);
+                AnnouncePage(true);
+                return;
+            }
+
+            _index = Mathf.Clamp(_index, 0, Items.Count - 1);
+            Component now = CurrentItem();
+            bool listChanged = !SameList(beforeList, Items);
+            if (now != before || listChanged)
+            {
+                if (activationRescan)
+                {
+                    Announce("界面已更新。");
+                }
+                else if (now != before)
+                {
+                    // 定期重扫/补扫挪了焦点：必须重念现在的当前项，不能悄悄漂移。
+                    Announce(null);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 清掉我们设的选中态：去掉高亮，也不给 uGUI 留提交目标。
+        /// 无条件清 —— 本作游戏自己从不使用 EventSystem 选中态（全库无 SetSelectedGameObject），
+        /// 但玩家用鼠标点过按钮后 uGUI 会把那个对象记成提交目标；接管结束还原
+        /// sendNavigationEvents 之后，按回车/空格可能把它再点一遍（旧版踩过的坑）。
+        /// </summary>
         private static void ReleaseSelection()
         {
-            GameObject go = _selectedByUs;
             _selectedByUs = null;
-            if (go == null) return;   // 已被销毁的也算 null，直接跳过
             try
             {
                 EventSystem es = EventSystem.current;
-                if (es != null && es.currentSelectedGameObject == go)
+                if (es != null && es.currentSelectedGameObject != null)
                     es.SetSelectedGameObject(null);
             }
             catch { }
@@ -406,8 +766,6 @@ namespace NoExistenceA11y
 
         private static void Scan()
         {
-            int keepGroupSibling = (Groups.Count > 0 && _groupIndex >= 0 && _groupIndex < Groups.Count)
-                ? Groups[_groupIndex].SiblingIndex : int.MinValue;
             Groups.Clear();
             _inputRoles.Clear();   // 实例 ID 会在对象销毁后被复用，每次重扫都重算
             _rescanRequestedFor = null;
@@ -417,7 +775,7 @@ namespace NoExistenceA11y
             {
                 bool diag = Plugin.CfgDiag != null && Plugin.CfgDiag.Value;
                 List<string> excluded = diag ? new List<string>() : null;
-                int inactive = 0, noCanvas = 0, inactiveScene = 0, blockedCount = 0, notInteractable = 0;
+                int inactive = 0, noCanvas = 0, inactiveScene = 0, blockedCount = 0, notInteractable = 0, nonMenuCount = 0;
                 Scene activeScene = SceneManager.GetActiveScene();
 
                 Selectable[] all = Resources.FindObjectsOfTypeAll<Selectable>();
@@ -463,6 +821,16 @@ namespace NoExistenceA11y
                     //   绕开正常流程状态机 —— 实测结果是黑屏 + 有音乐 + 无任何响应，
                     //   只能 Alt+F4。这不是游戏的问题，是我们不该把它扫进来。
                     if (Blocked(s.transform, diag ? excluded : null)) { blockedCount++; continue; }
+
+                    // ★ 非菜单界面（对话 HUD、字幕、跳过提示、载入、过场、QTE……）不自动接管。
+                    //   这些界面没有「可选项」，而且回车必须留给游戏推进剧情 ——
+                    //   否则玩家一按回车就被 HUD 按钮吃掉，剧情推不动。
+                    //   名单见 CfgUiMenuExcludePaths，用路径片段匹配。
+                    if (NonMenu(s.transform)) { nonMenuCount++; continue; }
+
+                    // 整屏「点击穿透层 / 推进热区」按钮：能点，但当作导航项毫无意义，
+                    // 焦点停在它上面只会让玩家以为界面没东西可点。
+                    if (FullscreenButton(s)) { nonMenuCount++; continue; }
 
                     // 游戏自己判定为「此刻不可用」的控件**不给人按**
                     // （实测：按下去会让游戏进到不该进的状态）。
@@ -525,12 +893,13 @@ namespace NoExistenceA11y
                             if (f.Length > 0 && path.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0) { hit = true; break; }
                         }
                         if (!hit) continue;
+                        if (NonMenu(tx.transform)) continue;
                         if (HiddenByCanvasGroup(tx.transform)) continue;
 
                         Group g = GroupOf(tx);
                         if (g != null) { g.Items.Add(tx); addedText++; }
                     }
-                    if (diag && addedText > 0)
+                    if (diag && addedText > 0 && Plugin.L != null)
                         Plugin.L.LogInfo("[UiNav] 白名单文字纳入导航 " + addedText + " 条（" + wl + "）");
                 }
 
@@ -544,18 +913,14 @@ namespace NoExistenceA11y
 
                 // 只留下**真的在画面上**的控件。这一步必须在排序之前做：
                 // 画面外/被挡住的控件不但念了没用，还会把编号撑大（「1 / 13」）。
-                //
-                // ★ 本作的实测教训：这套「可见性」判定是从上一部作品继承来的，
-                //   在本作上可能**把全部控件都筛掉**，表现就是按 Tab 什么都不导航。
-                //   所以加一道自愈兜底：严格控制后一组都没剩下、但确实存在激活控件时，
-                //   自动退回「只要是激活的 Selectable 就收」的宽松口径，宁可多念也不要不念。
+                // 严格筛完如果没剩下东西，不做「自愈兜底」——原因见下面那段注释。
                 int removedByVisibility = 0;
                 bool strict = Plugin.CfgUiVisibleOnly == null || Plugin.CfgUiVisibleOnly.Value;
 
                 if (strict) FilterByVisibility(true, diag ? excluded : null, ref removedByVisibility);
 
                 // ★ 这里曾经有一个「自愈兜底」：严格控制后一个都不剩时，退回
-                //   「只要是激活的 Selectable 就全收」。那是为了修「按 Tab 没反应」——
+                //   「只要是激活的 Selectable 就全收」。那是为了修「菜单里什么都读不到」——
                 //   而那个症状真正的病因是 IL2CPP 下 `as`/`is` 静默失败（见 As<T>），
                 //   已经修好了。兜底留下只会把**隐藏面板全部重新变成可达**：
                 //   实测在游戏内触发过一次，最终纳入从 1 个暴涨到 93 个、18 组，
@@ -586,6 +951,10 @@ namespace NoExistenceA11y
                     if (g.Items.Count > 0) continue;
                     if (g.ReadOnly.Count == 0 && g.Blocked.Count == 0) continue;
 
+                    // 只读篮子里的「非菜单/穿透层」同样不能进导航
+                    g.ReadOnly.RemoveAll(x => x == null || NonMenu(x.transform) || FullscreenButton(x));
+                    g.Blocked.RemoveAll(x => x == null || NonMenu(x.transform) || FullscreenButton(x));
+
                     g.Items.AddRange(g.ReadOnly);   // 看得见、游戏标成不可用
                     g.Items.AddRange(g.Blocked);    // 看得见、游戏标成可用但这一帧点不到（如「返回」）
                     readOnlyKept += g.Items.Count;
@@ -594,13 +963,13 @@ namespace NoExistenceA11y
                     DiagScan("这一屏没有能按的控件，纳入 " + readOnlyKept
                         + " 个（只读的只念不点；看得见但点不到的照常可激活）");
 
-                if (Plugin.L != null)
+                if (diag && Plugin.L != null)
                 {
                     int kept = 0;
                     for (int i = 0; i < Groups.Count; i++) kept += Groups[i].Items.Count;
                     Plugin.L.LogInfo(string.Format(
-                        "[UiNav] Selectable 总数={0} 未激活={1} 不在Canvas下={2} 开发者面板排除={3} 不可用={4} 被可见性筛掉={5} 最终纳入={6}（其中只读 {7}）",
-                        all.Length, inactive, noCanvas, blockedCount, notInteractable, removedByVisibility, kept, readOnlyKept));
+                        "[UiNav] Selectable 总数={0} 未激活={1} 不在Canvas下={2} 开发者面板排除={3} 非菜单/穿透层排除={4} 不可用={5} 被可见性筛掉={6} 最终纳入={7}（其中只读 {8}）",
+                        all.Length, inactive, noCanvas, blockedCount, nonMenuCount, notInteractable, removedByVisibility, kept, readOnlyKept));
                 }
 
                 // 组排序：Canvas 层级高的、兄弟序号靠后的（在更上层）排前面
@@ -612,14 +981,7 @@ namespace NoExistenceA11y
                 Groups.RemoveAll(g => g.Items.Count == 0);
                 for (int i = 0; i < Groups.Count; i++) SortWithin(Groups[i]);
 
-                _groupIndex = 0;
-                if (keepGroupSibling != int.MinValue)
-                {
-                    int found = Groups.FindIndex(g => g.SiblingIndex == keepGroupSibling);
-                    if (found >= 0) _groupIndex = found;
-                }
-
-                if (Plugin.L != null)
+                if (diag && Plugin.L != null)
                 {
                     var sb = new StringBuilder();
                     sb.Append("[UiNav] 扫描到 ").Append(Groups.Count).Append(" 组：");
@@ -1130,13 +1492,13 @@ namespace NoExistenceA11y
                 for (int gi = 0; gi < Groups.Count; gi++)
                 {
                     Group g = Groups[gi];
-                    sb.Append("\n[组 ").Append(gi + 1).Append(gi == _groupIndex ? " ★当前" : "")
+                    sb.Append("\n[组 ").Append(gi + 1).Append(gi == 0 ? " ★当前" : "")
                       .Append("] ").Append(g.Root != null ? PathOf(g.Root) : "?")
                       .Append("  项数=").Append(g.Items.Count);
                 }
-                if (Groups.Count > 0 && _groupIndex >= 0 && _groupIndex < Groups.Count)
+                if (Groups.Count > 0)
                 {
-                    Group g = Groups[_groupIndex];
+                    Group g = Groups[0];
                     for (int i = 0; i < g.Items.Count && i < 14; i++)
                     {
                         Component s = g.Items[i];
@@ -1223,14 +1585,18 @@ namespace NoExistenceA11y
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             // ---- 设置界面的行容器（TMP 取不到时的兜底）----
-            { "ScreenModePanel",     "画面模式" },
+            { "ScreenModePanel",     "显示模式" },
             { "MessageSpeedPanel",   "文本显示速度" },
             { "BgmVolumePanel",      "背景音乐音量" },
             { "SfxVolumePanel",      "音效音量" },
-            { "VoiceVolumePanel",    "角色语音音量" },
+            { "VoiceVolumePanel",    "语音音量" },
             { "LocaleLanguagePanel", "界面语言" },
             { "LocalePanel",         "界面语言" },
             { "VoiceLocalePanel",    "角色语音语言" },
+
+            // ---- 标题画面那条没有任何文字的隐藏滑条（游戏自带的隐藏成就）----
+            // 它没有可见标签，上溯只能拿到对象名 Image_Title，照着念等于没念。
+            { "Image_Title",         "标题画面滑条" },
 
             // ---- 纯图片按钮 ----
             { "Yes",     "确定" },
@@ -1558,12 +1924,22 @@ namespace NoExistenceA11y
             return AncestorNameOf(inf);
         }
 
-        /// <summary>滑条当前值的说法。0-1 范围的条按百分比念，否则念 N / M。</summary>
+        /// <summary>
+        /// 滑条当前值的说法。
+        /// 0–1 范围念百分比（「60%」）；其它范围念归一化百分比 + 原始值（「50%（0.75 / 1.5）」），
+        /// 这样标题画面那条 max=1.5 的隐藏滑条不会念成「2 / 2」这种会误导人的数。
+        /// </summary>
         private static string SliderValueText(Slider sl)
         {
+            float range = sl.maxValue - sl.minValue;
+            if (range <= 0.0001f) return "不可调";
+
+            float pct = Mathf.Clamp01((sl.value - sl.minValue) / range) * 100f;
             if (sl.minValue >= -0.001f && sl.maxValue <= 1.001f)
-                return Mathf.RoundToInt(Mathf.Clamp01(sl.value) * 100f) + "%";
-            return Mathf.RoundToInt(sl.value) + " / " + Mathf.RoundToInt(sl.maxValue);
+                return Mathf.RoundToInt(pct) + "%";
+
+            return Mathf.RoundToInt(pct) + "%（" + sl.value.ToString("0.##") + " / "
+                + sl.maxValue.ToString("0.##") + "）";
         }
 
         private static string Describe(Component s)
@@ -1574,7 +1950,8 @@ namespace NoExistenceA11y
             Slider sl = As<Slider>(s);
             TMP_InputField inf = As<TMP_InputField>(s);
 
-            sb.Append(inf != null ? InputFieldLabel(inf) : TextOf(s));
+            string label = inf != null ? InputFieldLabel(inf) : TextOf(s);
+            sb.Append(label);
 
             if (inf != null)
             {
@@ -1586,7 +1963,21 @@ namespace NoExistenceA11y
                     sb.Append("，最多 ").Append(inf.characterLimit).Append(" 个字");
             }
             else if (t != null) sb.Append("，开关，").Append(t.isOn ? "开" : "关");
-            else if (sl != null) sb.Append("，滑条，").Append(SliderValueText(sl));
+            else if (sl != null)
+            {
+                // 念全：当前值 + 范围 + 步长，玩家不用试就能知道按几下能满。
+                // 标签本身以「滑条」结尾时（标题画面那条）别再拼一次，避免「滑条，滑条」。
+                if (label.EndsWith("滑条", StringComparison.Ordinal)) sb.Append("，");
+                else sb.Append("，滑条，");
+                sb.Append(SliderValueText(sl));
+                float r = sl.maxValue - sl.minValue;
+                if (r > 0.0001f)
+                {
+                    if (sl.minValue >= -0.001f && sl.maxValue <= 1.001f) sb.Append("，共 100%");
+                    float st = sl.wholeNumbers ? Mathf.Max(1f, Mathf.Round(r / 20f)) : r / 20f;
+                    sb.Append("，每次 ").Append(Mathf.RoundToInt(st / r * 100f)).Append("%");
+                }
+            }
             else if (As<Button>(s) != null) sb.Append("，按钮");
             else sb.Append("，文字");
 
@@ -1610,31 +2001,43 @@ namespace NoExistenceA11y
             return n;
         }
 
-        private static void AnnounceGroup(bool withCount)
+        private static void AnnouncePage(bool withCount, bool interrupt = true)
         {
             if (Groups.Count == 0 || Items.Count == 0) return;
             string prefix = withCount
-                ? ("导航模式，第 " + (_groupIndex + 1) + " 组，共 " + Items.Count + " 项。")
+                ? ((string.IsNullOrEmpty(_pageLabel) ? "当前界面" : _pageLabel) + "，共 " + Items.Count + " 项。")
                 : "";
 
-            // 整组都是「只读」时先说清楚，免得玩家以为补丁坏了：
+            // 整页都是「只读」时先说清楚，免得玩家以为补丁坏了：
             // 这是游戏自己把这些控件标成不可用的（本作的彩蛋设置界面就是整屏如此）。
+            // 注意：纯文本页（回想条目 / 笔记本）本来就没有 Selectable，别误报「都不可用」。
             try
             {
-                if (UsableCount(Groups[_groupIndex]) == 0)
+                if (HasSelectableItem() && UsableCount(Groups[0]) == 0)
                     prefix += "这一屏的控件当前都不可用，只能听，不能选。";
             }
             catch { }
 
-            Announce(prefix);
+            Announce(prefix, interrupt);
         }
 
-        private static void Announce(string prefix)
+        /// <summary>当前组里有没有真正的 uGUI 控件（纯文本页没有）。</summary>
+        private static bool HasSelectableItem()
         {
-            if (!_active || Items.Count == 0) return;
+            for (int i = 0; i < Items.Count; i++)
+            {
+                try { if (As<Selectable>(Items[i]) != null) return true; }
+                catch { }
+            }
+            return false;
+        }
+
+        private static void Announce(string prefix, bool interrupt = true)
+        {
+            if (!_active || Groups.Count == 0 || Items.Count == 0) return;
             _index = Mathf.Clamp(_index, 0, Items.Count - 1);
             Component s = Items[_index];
-            if (s == null) { ExitInternal(false); return; }
+            if (s == null) { Disengage(false); return; }
 
             _announcedItem = s;
             SelectByUs(s.gameObject);
@@ -1642,68 +2045,19 @@ namespace NoExistenceA11y
             // 光标移到别处 = 放弃刚才那次退出确认
             ClearQuitConfirm();
 
-            Speech.Speak(prefix + Describe(s) + "。" + (_index + 1) + " / " + Items.Count, true);
-        }
-
-        private static void SwitchGroup(int dir)
-        {
-            if (Groups.Count <= 1)
-            {
-                Speech.Speak("只有一个面板组。", true);
-                return;
-            }
-            _groupIndex = (_groupIndex + dir + Groups.Count) % Groups.Count;
-            _index = 0;
-            AnnounceGroup(true);
+            Speech.Speak((prefix ?? "") + Describe(s) + "。" + (_index + 1) + " / " + Items.Count, interrupt);
         }
 
         // ================= 操作 =================
 
-        /// <summary>当前选中项；导航模式未生效或该项已失效时返回 null。</summary>
+        /// <summary>当前选中项；界面操作未接管或该项已失效时返回 null。</summary>
         private static Component CurrentItem()
         {
             if (!_active) return null;
-            if (_groupIndex < 0 || _groupIndex >= Groups.Count) return null;
-            if (Items.Count == 0) return null;
+            if (Groups.Count == 0 || Items.Count == 0) return null;
             int i = Mathf.Clamp(_index, 0, Items.Count - 1);
             Component s = Items[i];
             return s == null ? null : s;   // Unity 伪空：已销毁对象在此拦下
-        }
-
-        /// <summary>
-        /// 本帧游戏自身那次「推进剧情」是否该被拦掉。
-        ///
-        /// DialogueSceneManager / Ending2DialogueManager 的 Update 都是在
-        /// Input.GetKeyDown(空格/回车) 成立后紧接着调 DialogueButtonClicked()。
-        /// 只要那次按键已经归我们（或即将归我们），这次调用就该拦掉，
-        /// 剧情才只动一次。
-        ///
-        /// 两种判据都要有，因为两个 Update 谁先执行是不确定的：
-        ///   - 我们已经跑过：本帧接管过提交键 → 拦。
-        ///   - 我们还没跑：键正处于按下状态、且我们有可激活的选中项 → 拦。
-        ///
-        /// 我们自己激活控件时引发的推进要放行 —— 那个按钮本来就是干这个的
-        /// （例如全屏热区按钮）。
-        /// </summary>
-        internal static bool BlockGameAdvance
-        {
-            get
-            {
-                if (_inOurActivation) return false;
-
-                try { if (_submitHandledFrame == Time.frameCount) return true; }
-                catch { return false; }
-
-                try
-                {
-                    if (!Input.GetKeyDown(KeyCode.Return)
-                        && !Input.GetKeyDown(KeyCode.KeypadEnter)
-                        && !Input.GetKeyDown(KeyCode.Space)) return false;
-                }
-                catch { return false; }
-
-                return CurrentItem() != null;
-            }
         }
 
         // ================= 退出确认 =================
@@ -1786,7 +2140,7 @@ namespace NoExistenceA11y
 
         private static void Activate(Component item)
         {
-            if (item == null) { ExitInternal(false); return; }
+            if (item == null) { Disengage(false); return; }
 
             // 纯文本项（回想面板里的台词）没有可点的东西：
             // 回车就等于「再念一遍」，这也正是玩家想要的「重读上一句」。
@@ -1812,17 +2166,20 @@ namespace NoExistenceA11y
                 return;
             }
 
+            string label = TextOf(item);
+            if (string.IsNullOrEmpty(label)) label = "这一项";
+
             try
             {
                 TMP_InputField inf = As<TMP_InputField>(item);
                 if (inf != null)
                 {
-                    // 先退出导航（ReleaseSelection 会清掉上一个高亮），
-                    // 再把焦点交给输入框，否则刚设的焦点会被自己清掉。
-                    ExitInternal(false);
+                    // 输入框拿到焦点后我们暂停接管（见 InputFieldFocused），
+                    // 所以这里不退出界面操作，直接让玩家打字即可。
                     SelectByUs(inf.gameObject);
                     inf.ActivateInputField();
-                    Speech.Speak("已进入输入框，直接打字即可。按 Tab 返回导航。", true);
+                    Speech.Speak("已进入输入框，直接打字即可。", true);
+                    RequestRescanNextFrame();
                     return;
                 }
 
@@ -1830,7 +2187,7 @@ namespace NoExistenceA11y
                 if (t != null)
                 {
                     t.isOn = !t.isOn;
-                    Speech.Speak(t.isOn ? "开" : "关", false);
+                    Speech.Speak("「" + label + "」已" + (t.isOn ? "开启" : "关闭") + "。", false);
                     RequestRescanNextFrame();
                     return;
                 }
@@ -1838,31 +2195,31 @@ namespace NoExistenceA11y
                 Slider sl = As<Slider>(item);
                 if (sl != null)
                 {
-                    Speech.Speak("滑条请用左右方向键调整。", true);
+                    // 提示改打断：连按回车时永远听到最新状态，不排队。
+                    string head = "「" + label + "」";
+                    if (!label.EndsWith("滑条", StringComparison.Ordinal)) head += "，滑条";
+                    Speech.Speak(head + "，" + SliderValueText(sl)
+                        + "。左方向键减小，右方向键增大。", true);
                     return;
                 }
 
                 Button b = As<Button>(item);
                 if (b != null)
                 {
-                    string label = TextOf(item);
-                    Speech.Speak("已激活 " + label, false);
-                    _inOurActivation = true;
-                    try { b.onClick.Invoke(); }
-                    finally { _inOurActivation = false; }
+                    // 不立刻播「已激活」：多数按钮会换页面/弹子面板，
+                    // 新页面自己会播报；没换页面时才补一句，免得玩家不确定按没按上。
+                    _pendingActivationLabel = label;
+                    _pendingActivationPage = PageKey();
+                    _pendingActivationAt = Time.realtimeSinceStartup + 0.25f;
+                    b.onClick.Invoke();
                     // 下一帧重扫：此刻旧场景仍完整存活；
                     // 若该按钮触发场景切换，离真正卸载还有几十帧
                     RequestRescanNextFrame();
                     return;
                 }
 
-                _inOurActivation = true;
-                try
-                {
-                    ExecuteEvents.Execute(item.gameObject, new BaseEventData(EventSystem.current),
-                        ExecuteEvents.submitHandler);
-                }
-                finally { _inOurActivation = false; }
+                ExecuteEvents.Execute(item.gameObject, new BaseEventData(EventSystem.current),
+                    ExecuteEvents.submitHandler);
                 RequestRescanNextFrame();
             }
             catch (Exception e)
@@ -1894,19 +2251,62 @@ namespace NoExistenceA11y
             return true;
         }
 
-        private static void Adjust(float dir)
+        /// <summary>
+        /// 调整滑条一步。返回 true = 值真的变了（连发据此判断要不要继续）。
+        /// announce=false 时只改值不播报（连发过程中的节流，见 Update）。
+        /// </summary>
+        private static bool Adjust(float dir, bool announce = true)
         {
-            if (Items.Count == 0) return;
-            Slider sl = As<Slider>(Items[_index]);
-            if (sl == null) return;
+            if (Groups.Count == 0 || Items.Count == 0) return false;
+            int i = Mathf.Clamp(_index, 0, Items.Count - 1);
+            Component item = Items[i];
+            Slider sl = As<Slider>(item);
+            if (sl == null) return false;   // 只有滑条响应左右键；其它控件不吞键
+
             try
             {
-                float step = (sl.maxValue - sl.minValue) / 20f;
-                if (sl.wholeNumbers) step = Mathf.Max(1f, Mathf.Round(step));
-                sl.value = Mathf.Clamp(sl.value + dir * step, sl.minValue, sl.maxValue);
-                Speech.Speak(SliderValueText(sl), false);
+                var sel = As<Selectable>(item);
+                if (sel != null && !sel.interactable)
+                {
+                    // 彩蛋设置界面 / 载入进度条这种「只念不改」的项，绝不能悄悄改值；
+                    // 按住不放也只提醒一次（_repEndSaid），不然每 0.12 秒念一遍很吵。
+                    if (announce && !_repEndSaid)
+                    {
+                        Speech.Speak("该项当前不可用。", true);
+                        _repEndSaid = true;
+                    }
+                    return false;
+                }
+
+                float range = sl.maxValue - sl.minValue;
+                if (range <= 0.0001f) return false;
+                float step = sl.wholeNumbers ? Mathf.Max(1f, Mathf.Round(range / 20f)) : range / 20f;
+                float next = Mathf.Clamp(sl.value + dir * step, sl.minValue, sl.maxValue);
+                bool changed = Mathf.Abs(next - sl.value) > step * 0.5f;
+                if (!changed)
+                {
+                    if (announce && !_repEndSaid)
+                    {
+                        string endLabel = TextOf(item);
+                        if (string.IsNullOrEmpty(endLabel)) endLabel = "这一项";
+                        Speech.Speak(endLabel + "，" + SliderValueText(sl) + "，已到顶。", true);
+                        _repEndSaid = true;
+                    }
+                    return false;
+                }
+                _repEndSaid = false;
+                sl.value = next;   // Unity setter 会触发 onValueChanged，游戏自己会应用音量/速度
+
+                if (announce)
+                {
+                    // 念「名称 + 新值」并打断上一句：连按时听到的永远是最新值。
+                    string label = TextOf(item);
+                    if (string.IsNullOrEmpty(label)) label = "这一项";
+                    Speech.Speak(label + "，" + SliderValueText(sl) + "。", true);
+                }
+                return true;
             }
-            catch (Exception e) { Plugin.L.LogError("调整滑条失败: " + e.Message); }
+            catch (Exception e) { Plugin.L.LogError("调整滑条失败: " + e.Message); return false; }
         }
 
         // ================= 每帧 =================
@@ -1921,73 +2321,63 @@ namespace NoExistenceA11y
                 {
                     _lastSceneHandle = sc.handle;
                     _sceneChangedAt = Time.realtimeSinceStartup;
-                    if (_active || Groups.Count > 0) ExitInternal(false);
+                    if (_active) Disengage(false);
+                    Groups.Clear();
+                    _candidateSince = -1f;
+                    _pendingActivationAt = -1f;
                     return;
                 }
             }
             catch { }
 
-            // ---- 输入屏蔽按"选项框在不在"动态维持 ----
-            SyncInputBlock();
-
-            // ---- 进场重试：0.35 秒后再试一次进导航（界面刚出现时用得上）----
-            if (_retryEnterAt > 0f && Time.realtimeSinceStartup >= _retryEnterAt && !_active)
+            // ---- 输入框正在收打字：我们一个键都别碰 ----
+            if (InputFieldFocused())
             {
-                _retryEnterAt = -1f;
-                Enter();
-            }
-
-            // ---- 激活后的下一帧重扫（唯一允许的自动扫描）----
-            bool rescanDue =
-                (_pendingRescanFrame >= 0 && Time.frameCount >= _pendingRescanFrame) ||
-                (_pendingRescanFrame2 >= 0 && Time.frameCount >= _pendingRescanFrame2);
-            if (rescanDue)
-            {
-                if (_pendingRescanFrame >= 0 && Time.frameCount >= _pendingRescanFrame) _pendingRescanFrame = -1;
-                if (_pendingRescanFrame2 >= 0 && Time.frameCount >= _pendingRescanFrame2) _pendingRescanFrame2 = -1;
-                if (_active)
-                {
-                    if (!SceneStable()) { ExitInternal(false); return; }
-                    Component before = _announcedItem;
-                    var beforeList = new List<Component>(Items);
-                    Scan();
-                    if (Groups.Count == 0 || Items.Count == 0) { ExitInternal(false); return; }
-                    _index = Mathf.Clamp(_index, 0, Items.Count - 1);
-
-                    // 列表重建后 _index 还停在原来的序号上，但那个位置上可能已经换了
-                    // 别的控件（弹窗、二级菜单、翻页都会这样）。这时必须重新播报，
-                    // 否则玩家按下去的是他从没听过的东西 —— 主菜单 START/EXIT 那类
-                    // 只差一个单词的按钮，听错一次就出事。
-                    //
-                    // 注意还要比**整份清单**：打开子菜单时，当前这一项往往还是原来
-                    // 那个按钮（序号也没变），但列表里多了新控件。只比当前项的话
-                    // 就一声不吭，玩家以为界面没变。实测就是这样：按了 1/7 没有提示，
-                    // 直到按 Esc 才听见「界面已更新」。
-                    Component now = CurrentItem();
-                    if (now != before || !SameList(beforeList, Items)) Announce("界面已更新。");
-                }
-            }
-
-            if (Input.GetKeyDown(KeyCode.Tab))
-            {
-                DiagScan("Tab 按下（当前导航模式=" + _active + "）");
-                Toggle();
+                ClearQuitConfirm();
                 return;
             }
 
-            // 游戏**自己**换面板时（例如姓名输入按回车 →「确定要使用这个姓名吗」
-            // 确认框：promptUI 与 confirmationUI 直接 SetActive 互换）不会通知我们，
-            // 列表会一直停在旧控件上，新面板的按钮就「定位不到」。
-            // 当前项一旦失效就重扫一次；每个失效对象只请求一次，避免反复重扫。
-            // ★ 当前项失效就重扫 —— **"当前项为 null" 也必须重扫**（这里栽过一次）：
-            //   选项框（ChoiceHandlerPanel）的按钮是**池化复用**的，
-            //   扫描那一刻抓到的那个 Button 下一帧就可能被换掉/销毁，
-            //   于是 CurrentItem() 返回 Unity 伪空 → 回车那一支直接 return（按键原样交还游戏），
-            //   既没反应、也没提示。实测日志就是这个形状：
-            //     扫描里明明有「#1 （翻开笔记本），按钮」，但整局没有一行「激活 Selectable」——
-            //   玩家报告原话：「用界面导航模式点击选项是没有用的，只能用数字键选择」
-            //   （数字键那条路每帧重扫容器，所以一直是好的）。
-            if (_active && _pendingRescanFrame < 0 && Time.realtimeSinceStartup >= _nextDeadRescan)
+            // ---- 延迟的「已激活」补播 ----
+            TickPendingActivation();
+
+            // ---- 还没接管：空闲时侦测有没有界面出现 ----
+            if (!_active)
+            {
+                IdleDetect();
+                return;
+            }
+
+            // ---- 已经接管：页面被游戏关掉了（点了关闭、剧情推进、面板隐藏）→ 交还键盘 ----
+            if (!PageStillAlive())
+            {
+                Disengage(false);
+                return;
+            }
+
+            // ---- 激活后 / 定期重扫 ----
+            bool due1 = _pendingRescanFrame >= 0 && Time.frameCount >= _pendingRescanFrame;
+            bool due2 = _pendingRescanFrame2 >= 0 && Time.frameCount >= _pendingRescanFrame2;
+            if (due1 || due2)
+            {
+                // 只清到期的那一个：先到的「下一帧重扫」不能把稍后的补扫一起吞掉，
+                // 否则滑入/淡入动画期间新出现的控件会漏掉。
+                if (due1) _pendingRescanFrame = -1;
+                if (due2) _pendingRescanFrame2 = -1;
+                RescanEngaged(due1);
+                if (!_active) return;
+            }
+            else if (Time.realtimeSinceStartup >= _nextEngagedScan)
+            {
+                _nextEngagedScan = Time.realtimeSinceStartup + 1.0f;
+                RescanEngaged(false);
+                if (!_active) return;
+            }
+
+            // ---- 当前项失效 → 节流重扫 ----
+            // 选项框（ChoiceHandlerPanel）的按钮是池化复用的：扫描那一刻抓到的那个
+            // Button 下一帧就可能被换掉/销毁，于是 CurrentItem() 返回 Unity 伪空、
+            // 回车那一支直接 return（按键原样交还游戏），既没反应也没提示。
+            if (_pendingRescanFrame < 0 && Time.realtimeSinceStartup >= _nextDeadRescan)
             {
                 Component cur = CurrentItem();
                 bool dead = cur == null
@@ -2001,42 +2391,33 @@ namespace NoExistenceA11y
                 }
             }
 
-            // 全部控件失效时先退出导航，把按键还给游戏
-            if (_active && (Groups.Count == 0 || Items.Count == 0)) ExitInternal(false);
-
             // ---- 回车 / 空格：整块状态机唯一的判定点 ----
             //
-            //   非导航模式            CurrentItem() 为 null → 什么都不做，游戏自己推进剧情
-            //   导航模式 + 没有可用项  CurrentItem() 为 null → 同上
-            //   导航模式 + 有可用项    → 我们接管，激活它，并拦住游戏同一帧的推进
+            //   没有接管 / 没有可用项  → 什么都不做，游戏自己推进剧情
+            //   接管中 + 有可用项      → 我们激活它，并拦住游戏同一帧的推进
             if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter)
                 || Input.GetKeyDown(KeyCode.Space))
             {
                 Component target = CurrentItem();
 
-                // ★ 当前项已经死掉时，**当场重扫一次再试**。
-                //
-                // 选项框（ChoiceHandlerPanel）的按钮是池化复用的：扫描那一刻抓到的 Button
-                // 下一帧就可能被销毁，于是 CurrentItem() 返回 Unity 伪空、回车那一支直接 return —
-                // 玩家的体验就是"按了没反应"。实测日志的形状正是如此：扫描里明明有
-                // 「#1 （翻开笔记本），按钮」，却没有任何一行「激活 Selectable」。
-                //
-                // 只在"拿不出当前项"时重扫一次（下一次 Update 里的轮询那条路还在，二者互补）：
-                // 这样**第一次**按回车就能生效，而不是要按两下。
-                if (target == null && _active)
+                // 当前项已经死掉时当场重扫一次再试：这样第一次按回车就能生效，
+                // 而不是要按两下。
+                if (target == null)
                 {
-                    Scan();
-                    if (Groups.Count > 0 && Items.Count > 0)
-                    {
-                        _index = Mathf.Clamp(_index, 0, Items.Count - 1);
-                        target = CurrentItem();
-                    }
-                    Plugin.Diag("NAV 回车：当前项已失效 → 已当场重扫，结果=" + (target != null ? "有" : "仍无"));
+                    RescanEngaged(false);
+                    if (_active) target = CurrentItem();
+                }
+
+                // 页面刚好被游戏关掉（Esc / 关闭按钮 / 剧情推进）时，清单还停在上一帧：
+                // 这时把回车交还游戏，别去点一个已经藏起来的按钮（点中会重新打开面板）。
+                if (target != null && (HiddenByCanvasGroup(target.transform)
+                    || !target.gameObject.activeInHierarchy))
+                {
+                    RescanEngaged(false);
+                    target = _active ? CurrentItem() : null;
                 }
                 if (target != null)
                 {
-                    _submitHandledFrame = Time.frameCount;
-
                     // 标题画面的 EXIT 一按就关游戏，而游戏自己不给确认框。
                     // 读屏玩家分不清它和旁边的 START（美术字，只差一个单词），
                     // 所以这里补一道二次确认。详见 NeedsQuitConfirm。
@@ -2050,33 +2431,92 @@ namespace NoExistenceA11y
                     Activate(target);
 
                     // 激活之后界面很可能已经变了（打开子面板、弹出确认框、切页……），
-                    // 而游戏自己换面板**不会**通知我们。所以无条件排两次重扫：
-                    // 下一帧一次，稍晚再一次（面板有动画时用得上）。
-                    // 清单没变就不会播报，多扫一次没有副作用。
+                    // 而游戏自己换面板不会通知我们。所以无条件排两次重扫。
                     RequestRescanNextFrame();
                     RequestRescanDelayed();
                 }
                 return;
             }
 
-            if (!_active) return;
+            // ---- 退出确认的「按别的键取消」 ----
+            // 播报里说「按别的键取消」，就得真的取消；否则 8 秒内按 Esc/F9/退格
+            // 都落在这个状态里，玩家以为取消了、其实再按回车就退出游戏了。
+            if (_pendingQuit != null && Input.anyKeyDown
+                && !Input.GetKeyDown(KeyCode.Return)
+                && !Input.GetKeyDown(KeyCode.KeypadEnter)
+                && !Input.GetKeyDown(KeyCode.Space))
+            {
+                ClearQuitConfirm();
+            }
 
+            // ---- 浏览 / 调值 ----
+            if (Items.Count == 0) return;
             if (Input.GetKeyDown(KeyCode.UpArrow))
             {
+                ResetRepeatState();
                 _index = (_index - 1 + Items.Count) % Items.Count;
                 Announce(null);
             }
             else if (Input.GetKeyDown(KeyCode.DownArrow))
             {
+                ResetRepeatState();
                 _index = (_index + 1) % Items.Count;
                 Announce(null);
             }
-            else if (Input.GetKeyDown(KeyCode.PageDown)) SwitchGroup(1);
-            else if (Input.GetKeyDown(KeyCode.PageUp)) SwitchGroup(-1);
-            else if (Input.GetKeyDown(KeyCode.LeftArrow)) Adjust(-1f);
-            else if (Input.GetKeyDown(KeyCode.RightArrow)) Adjust(1f);
-            else if (Input.GetKeyDown(KeyCode.Home)) { _index = 0; Announce(null); }
-            else if (Input.GetKeyDown(KeyCode.End)) { _index = Items.Count - 1; Announce(null); }
+            else if (Input.GetKeyDown(KeyCode.Home)) { ResetRepeatState(); _index = 0; Announce(null); }
+            else if (Input.GetKeyDown(KeyCode.End)) { ResetRepeatState(); _index = Items.Count - 1; Announce(null); }
+            else
+            {
+                // 左右键：当前项是滑条时支持「按住连续调整」（20 档要按 20 次太累）；
+                // 其它控件上左右键不响应、也不吞键（普通按钮不该被左右键碰）。
+                Slider curSlider = Items.Count > 0
+                    ? As<Slider>(Items[Mathf.Clamp(_index, 0, Items.Count - 1)]) : null;
+                if (curSlider != null)
+                {
+                    float now = Time.realtimeSinceStartup;
+                    if (Input.GetKeyDown(KeyCode.LeftArrow))
+                    {
+                        _repActive = true;
+                        _repSteps = 0;
+                        _repDir = -1;
+                        Adjust(-1f, true);
+                        _repAt = now + RepeatFirstDelay;
+                    }
+                    else if (Input.GetKeyDown(KeyCode.RightArrow))
+                    {
+                        _repActive = true;
+                        _repSteps = 0;
+                        _repDir = 1;
+                        Adjust(1f, true);
+                        _repAt = now + RepeatFirstDelay;
+                    }
+                    else if (_repActive && _repDir != 0
+                        && Input.GetKey(_repDir < 0 ? KeyCode.LeftArrow : KeyCode.RightArrow)
+                        && now >= _repAt)
+                    {
+                        // 连发每 3 步才念一次值：0.12 秒一步，全念会把 TTS 打碎成
+                        // 「六十、六十五、七十」三连击，听感反而更差。
+                        _repSteps++;
+                        bool speak = (_repSteps % 3) == 0;
+                        if (!Adjust(_repDir, speak)) _repDir = 0;   // 到顶/不可用：停下
+                        else _repAt = now + RepeatInterval;
+                    }
+
+                    // 松手：念一次最终值（连发时最后一个值可能没念），然后复位。
+                    if (_repActive
+                        && !Input.GetKey(KeyCode.LeftArrow) && !Input.GetKey(KeyCode.RightArrow))
+                    {
+                        SpeakSliderNow();
+                        ResetRepeatState();
+                    }
+                }
+                else
+                {
+                    ResetRepeatState();
+                    if (Input.GetKeyDown(KeyCode.LeftArrow)) Adjust(-1f);
+                    else if (Input.GetKeyDown(KeyCode.RightArrow)) Adjust(1f);
+                }
+            }
         }
     }
 }

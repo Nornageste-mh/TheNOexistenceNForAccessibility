@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.1.1.2";
+        public const string Version = "0.2.0.0";
 
         internal static ManualLogSource L;
 
@@ -63,12 +63,13 @@ namespace NoExistenceA11y
         internal static ConfigEntry<string> CfgQteHotkey;
         internal static ConfigEntry<float> CfgQteFallbackDelay;
 
-        // ---- 界面导航（UiNav）----
+        // ---- 界面操作（UiNav）----
         internal static ConfigEntry<bool> CfgUiNav;
         internal static ConfigEntry<bool> CfgUiVisibleOnly;
         internal static ConfigEntry<bool> CfgUiSortByPosition;
         internal static ConfigEntry<string> CfgUiTextWhitelist;
-        internal static ConfigEntry<bool> CfgNavBlockInput;
+        internal static ConfigEntry<string> CfgHudHotkey;
+        internal static ConfigEntry<string> CfgUiMenuExcludePaths;
         internal static ConfigEntry<bool> CfgQuitConfirm;
         internal static ConfigEntry<string> CfgQuitNames;
         internal static ConfigEntry<string> CfgUiBlockedPaths;
@@ -185,16 +186,16 @@ namespace NoExistenceA11y
                 "留空则关闭这个功能键。");
 
             CfgRepeatKey = Config.Bind("朗读", "重读键", "Backspace",
-                "按这个键重读最近朗读过的剧情文本。\n" +
-                "连按可以一直往回走（最多记 30 句）；读到新的一句就回到最新。\n" +
+                "按这个键重读。\n" +
+                "菜单 / 回想界面打开时：重读当前这一项；剧情里：重读最近朗读过的那一句。\n" +
                 "记忆只在内存里，退出游戏即清空。\n" +
                 "留空可停用。填 Unity 的 KeyCode 名。");
             CfgSpeechInterrupt = Config.Bind("朗读", "新台词打断上一句", true,
                 "★ 默认**开**，与 TransparentHer 一致：Say(text, interrupt: true)。\n" +
                 "\n" +
                 "开着的时候每来一句就取消正在念的那句 —— 读得激进，但不会让朗读\n" +
-                "滞后于画面。长句没念完被打断的话，用「重读键」往回翻即可\n" +
-                "（这里记最近 30 句，比 TransparentHer 只记一句更经得起翻）。\n" +
+                "滞后于画面。长句没念完被打断的话，用「重读键」补听就行\n" +
+                "（菜单和回想里可以逐项重听，剧情里重读最后一句）。\n" +
                 "嫌某句太啰嗦就按「沉默键」让它闭嘴。\n" +
                 "\n" +
                 "关掉则改为排队等上一句念完 —— 一个字都不丢，但朗读会滞后于画面。\n" +
@@ -209,8 +210,8 @@ namespace NoExistenceA11y
                 "读屏玩家在加载期间完全不知道游戏在干什么 —— 没画面可看、没声音可听，\n" +
                 "很容易以为卡死了然后去乱按。\n" +
                 "两条通路都认：Naninovel 的 LoadingPanel，以及名字里带 load 的 Unity 场景。\n" +
-                "`n" +
-                "这句会**打断**正在念的台词 —— 它回答的正是「为什么现在没反应」，`n" +
+                "\n" +
+                "这句会**打断**正在念的台词 —— 它回答的正是「为什么现在没反应」，\n" +
                 "晚说几秒就失去意义了。被它打断的那句可以按「重读键」翻回来。");
             CfgStopOnVoiced = Config.Bind("朗读", "撞上配音时清空待读队列", true,
                 "只在「新台词打断上一句」关掉（=启用排队）时才有意义。\n" +
@@ -270,70 +271,78 @@ namespace NoExistenceA11y
                 "主角的全部台词都在选项框里（全剧 ≥625 条），所以这块不是可选项。\n" +
                 "每条选项出现时立刻带序号朗读。");
             CfgChoiceHotkeys = Config.Bind("选项框", "数字键直选", true,
-                "选项出现时按 1-9 直接选中对应项，不必用鼠标、也不必先按 Tab。");
+                "选项出现时按 1-9 直接选中对应项，不必用鼠标。");
 
-            CfgQteAutoPass = Config.Bind("QTE", "自动点击", true,
+            CfgQteAutoPass = Config.Bind("QTE", "自动通过", false,
                 "烤箱那段的 QTE 是纯视觉反应按键：按钮散落在屏幕上、超时就消失，\n" +
                 "正确选项加「修正值」、错误选项点了无事发生，低于阈值要重来。\n" +
                 "画面上没有任何可听的线索，盲人玩家没有可玩的通道。\n" +
                 "\n" +
-                "这个功能不可能让局面变坏：错误选项没有扣分，所以「把出现的按钮\n" +
-                "都点一遍」在结果上严格优于「什么都不点」。采集范围也严格限制在\n" +
-                "QTE 面板子树内，不会误碰别处的按钮。\n" +
+                "★ 默认关闭。自动通过是「替你操作」，会破坏这一段的沉浸感，\n" +
+                "也会让想看修正值上限的玩家失去选择权 —— 要不要用由你决定。\n" +
+                "正确的用法：先听游戏播报「反应环节。按 F3 可以自动通过。」，\n" +
+                "想跳过这一段时自己按下 F3。\n" +
                 "\n" +
-                "游戏里随时可以按下面的热键开关它。");
+                "打开后：出现按钮就代你点一遍（错误选项没有扣分，所以结果上严格\n" +
+                "优于什么都不点）。采集范围严格限制在 QTE 面板子树内，不会误碰别处按钮。");
             CfgQteHotkey = Config.Bind("QTE", "开关热键", "F3",
-                "在游戏里切换「自动点击」的按键。切换时会念出当前状态。\n" +
+                "在反应环节里切换「自动通过」的按键。切换时会念出当前状态。\n" +
+                "★ 无论「自动通过」配置是开是关，这个键都有效。\n" +
                 "填 Unity 的 KeyCode 名，例如 F3 / F4 / BackQuote。");
             CfgQteFallbackDelay = Config.Bind("QTE", "兜底延迟（秒）", 1.0f,
                 "★ 这就是实际生效的那个旋钮。\n" +
                 "\n" +
                 "修正值取决于点击时按钮的凝实程度：刚露头就点只有 50%，\n" +
-                "等按钮渐显到最实再点能到 97%。所以补丁会等一会儿再点。\n" +
+                "等按钮渐显到最实再点能到 97%。所以自动通过会等一会儿再点。\n" +
                 "\n" +
                 "实测（v0.0.0.4 日志）：按钮的渐隐不是靠 CanvasGroup / Image.color.a 做的，\n" +
                 "补丁读不到 alpha 变化，所以「按峰值点」那条路 100 次里只触发了 1 次 ——\n" +
                 "真正起作用的就是这个延迟。\n" +
                 "1.0 秒 = 97%。想冲 100% 可以试 1.2~1.5，但调太大有漏点的风险。");
 
-            CfgUiNav = Config.Bind("界面导航", "启用键盘导航", true,
-                "按 Tab 进入/退出导航模式，方向键选项，回车/空格激活。\n" +
-                "覆盖主菜单、设置、存档、选项框、标题画面等所有界面。");
-            CfgUiVisibleOnly = Config.Bind("界面导航", "只导航画面上可见的控件", true,
+            CfgUiNav = Config.Bind("界面操作", "启用键盘操作", true,
+                "打开时：游戏菜单一出现，键盘直接可用（没有模式开关、不用先按任何键）。\n" +
+                "上下方向键选项，回车/空格激活，左右方向键调整滑条，退格重读当前项。\n" +
+                "关掉后本模组完全不碰界面键盘，行为与没装本模组一致。");
+            CfgUiVisibleOnly = Config.Bind("界面操作", "只操作画面上可见的控件", true,
                 "关掉的话会把隐藏面板里的控件也扫进来，通常只会造成噪声。");
-            CfgUiSortByPosition = Config.Bind("界面导航", "按屏幕位置排序", true,
+            CfgUiSortByPosition = Config.Bind("界面操作", "按屏幕位置排序", true,
                 "关掉则按渲染层级排序。默认按位置更符合直觉。");
-            CfgUiTextWhitelist = Config.Bind("界面导航", "可导航文字的界面", "BacklogUI,BacklogFakeUI",
+            CfgUiTextWhitelist = Config.Bind("界面操作", "可导航文字的界面", "BacklogUI,BacklogFakeUI",
                 "★ 逗号分隔的路径片段。命中这些界面时，**纯文本也会变成导航项**。\n" +
                 "\n" +
                 "用途：回想（History）面板里每条台词是一个纯文字，没有对应的控件，\n" +
                 "按原来的做法打开回想之后什么都读不到。\n" +
-                "纳入之后：方向键逐条翻、回车重念当前这条 ——\n" +
-                "「重读上一句」和「回想朗读」一次解决，而且用的是游戏本来就有的交互。\n" +
+                "纳入之后：方向键逐条翻、回车重念当前这条。\n" +
                 "\n" +
                 "按钮/开关自带的标签会自动跳过，不会重复念。\n" +
                 "留空可停用。");
-            CfgNavBlockInput = Config.Bind("界面导航", "导航时屏蔽游戏输入", true,
-                "★ 建议保持开启。\n" +
-                "回车/空格同时是「激活当前控件」和「推进剧情」。不屏蔽的话，\n" +
-                "在回想面板里按回车重念一句，剧情会跟着往前走一格 ——\n" +
-                "玩家只是想重听，位置却变了。\n" +
-                "\n" +
-                "用的是引擎自己的接口 IInputManager.ProcessInput，不是去改游戏代码：\n" +
-                "进入导航时记下当时的值再关掉，退出时还原成记下的那个值，\n" +
-                "所以不会覆盖游戏自己因为别的原因（比如播片）关掉的输入。");
-            CfgQuitConfirm = Config.Bind("界面导航", "退出前二次确认", true,
+            CfgHudHotkey = Config.Bind("界面操作", "对话界面按钮热键", "Alt+M",
+                "剧情对话时，屏幕上的「设置」「回想」按钮游戏只留了鼠标入口（这是本作的\n" +
+                "界面设计，不是配错了）。按这个键可以进/出「对话界面按钮」的键盘操作。\n" +
+                "★ 只在这个场景用：菜单等其他界面会自动接管，不需要按键。\n" +
+                "写法见 Framework 约定：回车/空格不动，用 Alt+M 这类组合键。\n" +
+                "留空可停用。");
+            CfgUiMenuExcludePaths = Config.Bind("界面操作", "非菜单界面（不自动接管）",
+                "ControlUI,SubtitleUI,CustomSkipUI,QTEPanel,ChoiceHandler,ClickThrough,LoadingUI,MovieUI,TransitionUI,EraseUI,Phone",
+                "★ 逗号分隔的路径片段。这些是「不是菜单」的界面：对话 HUD、字幕、\n" +
+                "跳过提示、载入画面、过场、涂抹小游戏、手机（部分为剧情内工具）。\n" +
+                "它们不自动接管键盘：没有可选项，而且回车必须留给游戏推进剧情。\n" +
+                "对话 HUD 里的按钮另用「对话界面按钮热键」单独进入。");
+            CfgQuitConfirm = Config.Bind("界面操作", "退出前二次确认", true,
                 "「退出游戏」只按一下就关掉整个会话，而读屏用户分不清它和旁边的按钮，所以补一道确认。");
-            CfgQuitNames = Config.Bind("界面导航", "退出按钮对象名", "ExitButton,QuitGame,ExitGameButton,QuitButton",
+            CfgQuitNames = Config.Bind("界面操作", "退出按钮对象名", "ExitButton,QuitGame,ExitGameButton,QuitButton",
                 "逗号分隔的 GameObject 名。只有名字精确命中的按钮才需要二次确认。");
-            CfgUiBlockedPaths = Config.Bind("界面导航", "排除的面板路径", DefaultBlockedPaths,
-                "逗号分隔的路径片段，命中就不纳入导航。\n" +
+            CfgUiBlockedPaths = Config.Bind("界面操作", "排除的面板路径", DefaultBlockedPaths,
+                "逗号分隔的路径片段，命中就不纳入键盘操作。\n" +
                 "默认排掉的是 Naninovel 自带的**开发者工具**：\n" +
                 "  ScriptNavigatorUI —— 「直接跳转到任意剧本」面板。\n" +
                 "     实测踩过的坑：它能导航到「PlayScript: Title」这类原始剧本条目，\n" +
                 "     按下去会绕开正常流程把游戏扔进裸剧本，结果是黑屏+有音乐+无任何响应，\n" +
                 "     只能 Alt+F4。这不是游戏的问题，是我们不该让它可点。\n" +
-                "  ExternalScriptsBrowser / DebugInfoGUI / CustomVariableGUI —— 同类调试面板。");
+                "  ExternalScriptsBrowser / DebugInfoGUI / CustomVariableGUI —— 同类调试面板。\n" +
+                "  SaveLoadUI —— 本作故意不提供存/读档界面，但引擎那整套还在（存档/读档/\n" +
+                "     快速读档三个页签 + 存档槽 + 翻页 + 删除），别让它出现在操作列表里。");
 
             // QTE 自动点击的运行时开关：初值取自配置，游戏里可用热键随时切换
             Qte.AutoOn = CfgQteAutoPass.Value;
@@ -537,7 +546,8 @@ namespace NoExistenceA11y
         ///
         /// 回溯版（连按往回走）虽然能翻回被截断的长句，但连按两下就退到了更早的
         /// 句子，人会搞不清此刻听到的是哪一句 —— 那种「不知道自己在哪」更糟。
-        /// 想往回翻更多，用 Tab 打开回想（History）面板逐条走，那条路本来就有。
+        /// 想往回翻更多，用游戏自己的「回想」（History）按钮打开回想面板逐条走，
+        /// 界面里方向键翻、回车重念当前条 —— 那条路本来就有。
         ///
         /// 有配音的行也会记进来 —— 语音错过了，退格重读文本正是玩家要的。
         /// </summary>
@@ -570,7 +580,15 @@ namespace NoExistenceA11y
 
             bool down;
             try { down = Input.GetKeyDown(k); } catch { return; }
-            if (down) RepeatBack();
+            if (!down) return;
+
+            // 输入框正在打字：退格是删字，不能被我们抢去重读。
+            try { if (UiNav.InputFieldActive) return; } catch { }
+
+            // 界面操作接管中：退格先重读「当前这一项」（菜单/回想条目），
+            // 没有接管时才重读最后一句剧情 —— 语义相同，共用一个出口。
+            if (UiNav.RepeatCurrent()) return;
+            RepeatBack();
         }
 
         /// <summary>沉默键：立刻让朗读闭嘴。对齐 TransparentHer 的「沉默按键」。</summary>
@@ -798,11 +816,20 @@ namespace NoExistenceA11y
         {
             _ticks++;
 
-            // 界面导航：keep-submit-off 必须无条件每帧重申（新场景的 EventSystem 默认又是 true）
-            try { UiNav.KeepUnitySubmitOff(); } catch { }
+            // 界面操作：菜单一出现就自动接管（uGUI 提交通路只在接管期间关，退出即还原）。
             if (Plugin.CfgUiNav == null || Plugin.CfgUiNav.Value)
             {
                 try { UiNav.Update(); } catch (Exception e) { Plugin.Diag("UiNav: " + e.Message); }
+                try
+                {
+                    // 剧情 HUD 里的「设置」「回想」游戏只给了鼠标入口，单独给一个显式热键。
+                    // 只在「没接管」或「正在操作 HUD」时响应，避免和菜单里的方向键抢。
+                    if ((!UiNav.Active || UiNav.HudMode) && !UiNav.InputFieldActive
+                        && Plugin.CfgHudHotkey != null
+                        && Hotkey.Down(Plugin.CfgHudHotkey.Value))
+                        UiNav.ToggleHud();
+                }
+                catch (Exception e) { Plugin.Diag("HudHotkey: " + e.Message); }
             }
             try { Choices.Update(); } catch (Exception e) { Plugin.Diag("Choices: " + e.Message); }
             try { Subtitles.Update(); } catch (Exception e) { Plugin.Diag("Subtitles: " + e.Message); }

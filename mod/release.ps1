@@ -1,10 +1,10 @@
 # =====================================================================
-#  Assemble the release zip for v0.1.1.2
+#  Assemble the release zip for v0.2.0.0
 #
 #  发布包 = BepInEx 6.0.0-be.788 官方包
 #         + 打过补丁的 Il2CppInterop.Runtime.dll（上游 PR #277）
 #         + 本补丁插件
-#         + 两份文档 + licenses\（第三方许可证与声明）
+#         + 文档（安装说明 / 常见问题 / 操作约定）+ licenses\（第三方许可证与声明）
 #
 #  不含 BepInEx/interop 与 unity-libs —— 那是首次运行时按本机游戏
 #  自动生成的，不该由我们分发。
@@ -17,7 +17,7 @@ $MOD  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SRC  = Join-Path $MOD 'src\NoExistenceA11y'
 $PKG  = Join-Path $MOD 'package'
 $OUT  = Join-Path $MOD 'dist'
-$REL  = Join-Path $OUT 'NoExistenceA11y-0.1.1.2'
+$REL  = Join-Path $OUT 'NoExistenceA11y-0.2.0.0'
 $BE   = Join-Path $MOD '..\probe\bepinex_be788.zip'
 $PAT  = Join-Path $MOD '..\probe\evidence\Il2CppInterop.Runtime.PATCHED.dll'
 $NVDA = 'D:\DSHWorkBase\transparenther_a11y\mod\nvda_dl\x64\nvdaControllerClient.dll'
