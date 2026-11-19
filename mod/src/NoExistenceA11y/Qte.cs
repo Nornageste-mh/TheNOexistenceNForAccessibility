@@ -53,7 +53,7 @@ namespace NoExistenceA11y
     ///   · QTE 结束念「反应环节结束。」+ 面板上抓到的修正值（抓到才念）；
     ///     4 秒内再次出现则念「反应环节重新开始。」（重来）。
     ///   · 所有环境播报 interrupt=false（不打断剧情朗读）；只有 F3 的显式操作打断。
-    ///   · 播报同时调用 Plugin.Remember，退格键可以重读最后一条。
+    ///   · 播报不写重读缓冲（0.2.1 用户要求：缓冲只放剧情正文与选项）。
     ///
     /// === 安全性 ===
     ///   错误选项没有扣分，所以「点一遍」在结果上严格优于「什么都不点」。
@@ -253,8 +253,7 @@ namespace NoExistenceA11y
             if (!_hintGiven)
             {
                 _hintGiven = true;
-                Speech.Speak(msg, false);       // 不打断剧情朗读
-                Plugin.Remember(msg);           // 退格可重读
+                Speech.Speak(msg, false);       // 不打断剧情朗读；不写重读缓冲
             }
         }
 
@@ -269,8 +268,7 @@ namespace NoExistenceA11y
             string score = PickScoreText();
             string msg = string.IsNullOrEmpty(score) ? MsgEnd : MsgEnd + score;
             if (!string.IsNullOrEmpty(score)) Plugin.Diag("QTE 结果播报: " + score);
-            Speech.Speak(msg, false);           // 不打断剧情朗读
-            Plugin.Remember(msg);
+            Speech.Speak(msg, false);           // 不打断剧情朗读；不写重读缓冲
 
             _live = false;
             _clicks = 0;
@@ -289,8 +287,7 @@ namespace NoExistenceA11y
             _hintCount++;
             _nextHintAt = now + HintInterval;
             Plugin.Diag("QTE 提示 #" + _hintCount + "：仍在反应环节");
-            Speech.Speak(MsgStillRunning, false);
-            Plugin.Remember(MsgStillRunning);
+            Speech.Speak(MsgStillRunning, false);   // 不进重读缓冲
         }
 
         /// <summary>

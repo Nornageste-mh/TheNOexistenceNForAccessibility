@@ -20,7 +20,7 @@ namespace NoExistenceA11y
         /// 纯数字，四段。**不要在版本号里加字母** —— BepInPlugin 的版本参数是
         /// System.Version，`0.1.0a` 这种会直接抛异常导致插件加载失败。
         /// </summary>
-        public const string Version = "0.2.0.0";
+        public const string Version = "0.2.1.0";
 
         internal static ManualLogSource L;
 
@@ -113,11 +113,13 @@ namespace NoExistenceA11y
 
             CfgEnabled = Config.Bind("朗读", "启用", true, "总开关。");
             CfgSkipVoiced = Config.Bind("朗读", "有配音时不再朗读", true,
-                "命中配音白名单时只放游戏语音，不用 TTS 重复念一遍。");
+                "（0.2.1 起有配音的行完全静默：正文与角色名都不再朗读，本开关保留只为兼容旧配置，已不生效。）\n" +
+                "旧行为：命中配音白名单时只放游戏语音，不用 TTS 重复念一遍。");
             CfgAnnounceSpeaker = Config.Bind("朗读", "播报说话人", true,
                 "朗读无配音台词前先报说话人名（如「国王：」）。旁白不报。");
             CfgAnnounceOnVoiced = Config.Bind("朗读", "有配音时也报名", true,
-                "莉莉丝系有多个名号（莉莉丝/莉莉丝公主/魔王莉莉丝/神秘少女）。\n" +
+                "（0.2.1 起有配音的行完全静默：正文与角色名都不再朗读，本开关保留只为兼容旧配置，已不生效。）\n" +
+                "旧行为：莉莉丝系有多个名号（莉莉丝/莉莉丝公主/魔王莉莉丝/神秘少女），\n" +
                 "声音一样，但屏幕上换名字是重要剧情，所以在有配音时也念一遍名字。");
             CfgReadTrivial = Config.Bind("朗读", "朗读纯省略号", false,
                 "像「……」这种只有标点的行是否也读出来。默认不读。");
@@ -174,9 +176,8 @@ namespace NoExistenceA11y
                 "按**人**过滤不会漏：本作有配音的就是莉莉丝（含她的各种名号）与 ???，\n" +
                 "配角 / 道具（书桌、低筋面粉……）都没有配音，照念。\n" +
                 "\n" +
-                "代价：万一某句莉莉丝的台词其实**没有**配音，这句的文本就不会自动念了 ——\n" +
-                "按「重读键」（退格）随时能把它念出来，所以代价可控。\n" +
-                "留空可停用（退回到只按行号白名单判断）。");
+                "代价：万一某句其实**没有**配音却被当成有配音，这句就完全不朗读了（也不进重读缓冲）——\n" +
+                "所以名单只放确实有配音的说话人；拿不准就留空，退回只按行号白名单判断。");
             CfgSpeechBackend = Config.Bind("朗读", "语音后端", "自动",
                 "自动 / NVDA / Tolk / 争渡 / SAPI。填具体值可强制只用那一个（排查用）。");
             CfgBackendKey = Config.Bind("朗读", "切换语音后端按键", "F9",
@@ -187,7 +188,8 @@ namespace NoExistenceA11y
 
             CfgRepeatKey = Config.Bind("朗读", "重读键", "Backspace",
                 "按这个键重读。\n" +
-                "菜单 / 回想界面打开时：重读当前这一项；剧情里：重读最近朗读过的那一句。\n" +
+                "菜单 / 回想界面打开时：重读当前这一项；剧情里：重读最近朗读过的一句未配音正文。\n" +
+                "（有配音的行不朗读、也不进这个缓冲。）\n" +
                 "记忆只在内存里，退出游戏即清空。\n" +
                 "留空可停用。填 Unity 的 KeyCode 名。");
             CfgSpeechInterrupt = Config.Bind("朗读", "新台词打断上一句", true,
@@ -220,7 +222,10 @@ namespace NoExistenceA11y
                 "\n" +
                 "打断模式（默认）下不存在队列，这一项不起作用 ——\n" +
                 "那种情况下「有配音就 Speech.Stop()」是 TransparentHer 的原始行为。");
-            CfgDiag = Config.Bind("诊断", "详细日志", true, "把每一句的判定过程写进 BepInEx\\noexistence_a11y.log。");
+            CfgDiag = Config.Bind("诊断", "详细日志", false,
+                "把每一句的判定过程写进 BepInEx\\noexistence_a11y.log。\n" +
+                "默认关闭：0.2.1 起卡顿反馈的主要来源就是它——每个界面扫描都会写入整屏控件清单。\n" +
+                "排查问题时再打开（或装测试版）。");
             CfgHideConsole = Config.Bind("诊断", "隐藏控制台窗口", true,
                 "把 BepInEx 那个黑色控制台窗口藏起来。对玩家来说它就是「游戏旁边`n" +
                 "多出来一个看不懂的黑框」，很容易被当成木马或报错。`n" +
@@ -537,7 +542,8 @@ namespace NoExistenceA11y
         // ==================== 重读上一句 ====================
 
         /// <summary>
-        /// 最近朗读过的一句剧情文本。**只在内存里，不落盘**（玩家要求的「非持久化记忆」）。
+        /// 最近朗读过的一句**未配音**剧情文本（选项由 Choices 单独写入）。
+        /// **只在内存里，不落盘**（玩家要求的「非持久化记忆」）。
         ///
         /// 与 TransparentHer 完全对齐：
         ///     if (Input.GetKeyDown(rk) && !string.IsNullOrEmpty(_lastSpoken))
@@ -549,7 +555,8 @@ namespace NoExistenceA11y
         /// 想往回翻更多，用游戏自己的「回想」（History）按钮打开回想面板逐条走，
         /// 界面里方向键翻、回车重念当前条 —— 那条路本来就有。
         ///
-        /// 有配音的行也会记进来 —— 语音错过了，退格重读文本正是玩家要的。
+        /// 只有**未配音的剧情正文**才会记进缓冲；有配音的行交给游戏语音，
+        /// 不朗读、不报名、也不写缓冲（0.2.1 用户反馈②）。选项由 Choices 单独写入。
         /// </summary>
         private static string _lastLine = "";
 
@@ -762,8 +769,8 @@ namespace NoExistenceA11y
             // ★ 两条判据取并集（作者定的口径）：
             //   1) 行号白名单（精确，但可能漏）
             //   2) **说话人白名单**：说话人名 / id 里含「莉莉丝」或就是 ??? 的一律当有配音
-            //      —— 按人过滤不会漏；代价是万一某句其实没配音，文本就不自动念了
-            //      （按退格仍能念出来，所以代价可控）。
+            //      —— 按人过滤不会漏；代价是万一某句其实没配音，这句就完全读不到了
+            //      （有配音的行不朗读、不进重读缓冲，所以名单要保守）。
             string name = SpeakerNames.Resolve(author);
             bool voicedBySpeaker = SpeakerLooksVoiced(author, name);
             bool voiced = voicedBySpeaker || VoiceLineIds.IsVoiced(key);
@@ -784,22 +791,19 @@ namespace NoExistenceA11y
 
             string line = narr || !CfgAnnounceSpeaker.Value ? speech : (name + "：" + speech);
 
-            // 有配音的行也记进来 —— 语音错过了，退格重读文本正是玩家要的
-            Remember(line);
-
+            // 有配音的行**什么都不朗读**：正文交给游戏语音，角色名也不念，
+            // 并且不进重读缓冲（0.2.1 用户反馈②：读屏把配音行又念一遍、退格还把
+            // 配音台词重读出来，和游戏语音叠在一起）。
+            // 只保留清队列：清掉上一句还在排的 TTS，避免它压到刚起的角色语音上。
+            // 想优先保证「上一句长旁白一字不漏」就把下面这个开关关掉。
             if (voiced)
             {
-                // 有游戏语音：默认掐掉还在排队的上一句，避免和角色语音叠在一起
-                // （叠起来两边都听不清）。但这也会把「上一句长旁白」砍断 ——
-                // 想优先保证一字不漏，就把下面那个开关关掉。
                 if (CfgStopOnVoiced == null || CfgStopOnVoiced.Value) Speech.Stop();
-
-                if (!narr && CfgAnnounceSpeaker.Value && CfgAnnounceOnVoiced.Value
-                    && author != "Lilith" && author != "Lilith_1")
-                    Speech.Speak(name, false);
                 return;
             }
 
+            // 只有「未配音剧情正文」进入重读缓冲；菜单 / QTE / 加载 / 字幕等播报一律不写。
+            Remember(line);
             // 默认不打断：新台词排队，等上一句念完。长句被截断是实打实的信息丢失。
             Speech.Speak(line, CfgSpeechInterrupt != null && CfgSpeechInterrupt.Value);
         }

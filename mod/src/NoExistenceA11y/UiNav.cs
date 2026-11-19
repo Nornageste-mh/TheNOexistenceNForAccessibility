@@ -149,9 +149,24 @@ namespace NoExistenceA11y
 
         private static readonly List<Group> Groups = new List<Group>();
         private static readonly List<Component> EmptyItems = new List<Component>();
+
+        /// <summary>
+        /// 当前页面包含的组：同一个「界面根」（TitleUI / SettingsUI / NewCGGalleryUI …）
+        /// 下的所有组。
+        ///
+        /// 为什么要合并：游戏的一个界面常常横跨多个 Canvas 组 ——
+        ///   · 标题画面：按钮在 ButtonsPanel，「不」字那条隐藏滑条在 LogoPanel；
+        ///   · CG 画廊：格子与翻页在 CGPanel，**返回按钮在 Top**。
+        /// 只取最上面那一组，这些控件就永远进不了导航（实测玩家困死在画廊）。
+        /// </summary>
+        private static readonly List<Group> PageGroups = new List<Group>();
+
+        /// <summary>当前页面的导航项：PageGroups 的 Items 依次拼接（组已按前后遮挡排序，组内已按位置排序）。</summary>
+        private static readonly List<Component> PageItems = new List<Component>();
+
         private static List<Component> Items
         {
-            get { return Groups.Count > 0 ? Groups[0].Items : EmptyItems; }
+            get { return PageItems; }
         }
 
         // 界面操作此刻是否接管（取代原来的「Tab 导航模式」开关）
@@ -186,11 +201,21 @@ namespace NoExistenceA11y
 
         // ---- 自动接管界面（无模式键）----
         private static float _nextIdleScan;            // 下一次「空闲扫描」的时间
+        private static float _lastUserInputAt;         // 玩家最后一次按键的时间（空闲扫描自适应退避用）
         private static float _candidateSince = -1f;    // 候选页面第一次被看到的时间
+        private static string _candidateKey = "";      // 候选页面身份（要连续两次扫描一致才接管）
+        private static int _candidateScans;            // 已经连续看到候选页面的次数
+        private static string _excludedModalRoot = ""; // 被排除的模态界面根名（存档UI/选项/开发者面板…）
+        private static int _excludedModalOrder = int.MinValue;   // 它的 Canvas 排序号（判断是不是盖在最上面）
+        private static string _blockedNote = "";       // 上次播过的「被排除模态」日志（防 0.35 秒一行）
         private static Transform _pageRoot;            // 当前页面的分组根
         private static string _pageKey = "";           // 当前页面身份（控件公共祖先的路径）
         private static string _pageLabel = "";         // 当前页面的人话名字
         private static float _nextEngagedScan;         // 接管期间的定期重扫（捕捉鼠标引起的界面变化）
+        private static float _settleUntil;             // 刚接管后的静默期（面板动画未稳，不播「界面已更新」）
+        private static float _lastDumpAt = float.NegativeInfinity;   // 上次写详细诊断清单的时间（限流用）
+        private static float _nextInputFieldScan;      // 输入框兜底扫描节流（防每帧 FindObjectsOfTypeAll）
+        private static bool _inputFieldFallback;       // 上次兜底扫描的结果
         private static float _lastExitAt = float.NegativeInfinity;
         private static string _lastExitKey = "";
 
@@ -264,6 +289,7 @@ namespace NoExistenceA11y
             _pageKey = PageKey();
             _pageLabel = PageLabel();
             _nextEngagedScan = Time.realtimeSinceStartup + 1.0f;
+            _settleUntil = Time.realtimeSinceStartup + 0.8f;   // 接管后 0.8 秒内不播「界面已更新」
             ResetRepeatState();
             SuppressUguiNav(true);
             BlockPageGameInput(true);
@@ -286,12 +312,15 @@ namespace NoExistenceA11y
             _active = false;
             _hudMode = false;
             _index = 0;
+            _settleUntil = 0f;
             _pendingRescanFrame = -1;
             _pendingRescanFrame2 = -1;
             _announcedItem = null;
             _pendingActivationAt = -1f;
             _pendingActivationLabel = null;
             _candidateSince = -1f;
+            _candidateKey = "";
+            _candidateScans = 0;
             ResetRepeatState();
             ClearQuitConfirm();
             ReleaseSelection();
@@ -302,9 +331,12 @@ namespace NoExistenceA11y
                 _lastExitAt = Time.realtimeSinceStartup;
                 _lastExitKey = _pageKey;
             }
+            PageGroups.Clear();
+            PageItems.Clear();
             _pageRoot = null;
             _pageKey = "";
             _pageLabel = "";
+            _nextIdleScan = 0f;   // 刚交还键盘：下一帧就开始侦测，界面若还在就重新接管
             if (announce)
             {
                 try { Speech.Speak("已退出界面操作。", !wasHud); } catch { }
@@ -463,14 +495,20 @@ namespace NoExistenceA11y
                 }
 
                 // 兜底：某些输入框没有走 EventSystem 选中态，扫一遍真正 isFocused 的那个。
+                // ★ 这个兜底每帧调用一次 = 每帧 FindObjectsOfTypeAll，实测是卡顿来源之一，
+                //   改为 0.5 秒最多扫一次并缓存结果（本作输入框都走 EventSystem，兜底概率极低）。
+                float now = Time.realtimeSinceStartup;
+                if (now < _nextInputFieldScan) return _inputFieldFallback;
+                _nextInputFieldScan = now + 0.5f;
+                _inputFieldFallback = false;
                 var all = Resources.FindObjectsOfTypeAll<TMP_InputField>();
                 for (int i = 0; i < all.Length; i++)
                 {
                     TMP_InputField f = all[i];
                     if (f == null || f.gameObject == null) continue;
-                    if (f.gameObject.activeInHierarchy && f.isFocused) return true;
+                    if (f.gameObject.activeInHierarchy && f.isFocused) { _inputFieldFallback = true; break; }
                 }
-                return false;
+                return _inputFieldFallback;
             }
             catch { return false; }
         }
@@ -480,11 +518,15 @@ namespace NoExistenceA11y
         {
             try
             {
-                if (Groups.Count == 0) return false;
-                Transform root = Groups[0].Root;
-                if (root == null) return false;
-                if (root.gameObject == null || !root.gameObject.activeInHierarchy) return false;
-                return !AlphaHidden(root);
+                if (PageGroups.Count == 0) return false;
+                for (int i = 0; i < PageGroups.Count; i++)
+                {
+                    Transform root = PageGroups[i].Root;
+                    if (root == null || root.gameObject == null) continue;
+                    if (!root.gameObject.activeInHierarchy) continue;
+                    if (!AlphaHidden(root)) return true;
+                }
+                return false;
             }
             catch { return false; }
         }
@@ -501,6 +543,16 @@ namespace NoExistenceA11y
             try
             {
                 Transform common = null;
+                // 先用本页各组根的公共祖先（结果就是 UI 根，例如 …/ModalUI/TitleUI），
+                // 比只拿控件的公共祖先稳定：页内还有未显示的兄弟组时也不会算错。
+                for (int i = 0; i < PageGroups.Count; i++)
+                {
+                    Transform rt = PageGroups[i].Root;
+                    if (rt == null) continue;
+                    common = common == null ? rt : CommonAncestor(common, rt);
+                    if (common == null) break;
+                }
+                if (common != null) return PathOf(common);
                 for (int i = 0; i < Items.Count; i++)
                 {
                     Component c = Items[i];
@@ -541,6 +593,132 @@ namespace NoExistenceA11y
             }
             catch { }
             return null;
+        }
+
+        /// <summary>
+        /// 从组根/控件的路径里取它所属的「界面根」名字：
+        /// `Naninovel&lt;Runtime&gt;/ModalUI/&lt;Name&gt;/…` 或 `…/UI/&lt;Name&gt;/…` 里的 &lt;Name&gt;。
+        /// 例：SettingsUI、TitleUI、NewCGGalleryUI、BacklogFakeUI、ControlUI。
+        /// 认不出来返回空串（调用方退回只操作最上面那一组）。
+        /// </summary>
+        private static string UiRootOf(Transform t)
+        {
+            try
+            {
+                string path = PathOf(t);
+                int m = path.IndexOf("/ModalUI/", StringComparison.OrdinalIgnoreCase);
+                if (m >= 0) return NextSegment(path, m + "/ModalUI/".Length);
+                int u = path.IndexOf("/UI/", StringComparison.OrdinalIgnoreCase);
+                if (u >= 0) return NextSegment(path, u + "/UI/".Length);
+                return "";
+            }
+            catch { return ""; }
+        }
+
+        private static string NextSegment(string path, int start)
+        {
+            if (start >= path.Length) return "";
+            int end = path.IndexOf('/', start);
+            return end < 0 ? path.Substring(start) : path.Substring(start, end - start);
+        }
+
+        /// <summary>
+        /// 页面 = 排序后第一组所属的界面根下的所有组；其他界面根一律不算本页。
+        /// 例：打开设置时，背景里还活着的 TitleUI 组会被排除，标题按钮不会混进设置页；
+        /// 标题画面自己的 ButtonsPanel + LogoPanel 则会合成一页（「不」字滑条才可达）。
+        /// </summary>
+        private static void SelectPage()
+        {
+            PageGroups.Clear();
+            PageItems.Clear();
+            if (Groups.Count == 0) return;
+
+            // ★ 被规则排除的模态界面（存档读档、选项、开发者面板、QTE/加载/电影…）
+            //   如果它盖在当前页面上面，就一页都不给：绝不能去点背景界面里露出来的按钮
+            //   （否则在存档面板上按回车会点穿到标题画面的 START）。
+            //   注意 CanvasOrder 比较取「最上层被排除模态」与「当前最上层可操作组」。
+            if (_excludedModalOrder > Groups[0].CanvasOrder)
+            {
+                if (_blockedNote != _excludedModalRoot)
+                {
+                    _blockedNote = _excludedModalRoot;
+                    DiagScan("最上层是被排除的界面「" + _excludedModalRoot + "」，暂不接管（防点穿背景）");
+                }
+                return;
+            }
+            _blockedNote = "";
+
+            string rootUi = UiRootOf(Groups[0].Root);
+            for (int i = 0; i < Groups.Count; i++)
+            {
+                Group g = Groups[i];
+                if (g.Root == null || g.Items.Count == 0) continue;
+                if (!string.IsNullOrEmpty(rootUi) && UiRootOf(g.Root) != rootUi) continue;
+                PageGroups.Add(g);
+                PageItems.AddRange(g.Items);
+            }
+
+            // 认不出界面根（例如刚加载出来的裸 Canvas）时退回旧行为：只操作最上面那一组。
+            if (PageGroups.Count == 0)
+            {
+                PageGroups.Add(Groups[0]);
+                PageItems.AddRange(Groups[0].Items);
+            }
+
+            SortPage();   // ★ 跨组全局位置排序：读屏玩家靠「上下」建立空间印象，顺序必须和画面一致
+        }
+
+        /// <summary>
+        /// 把合并后的整页项目按屏幕位置统一排序（同一页里可能来自多个 Canvas 组）。
+        /// 相机按**该项所属组**取，不能统一用一个相机（Overlay 与相机模式混用会算错）。
+        /// </summary>
+        private static void SortPage()
+        {
+            if (PageItems.Count < 2) return;
+            bool byPosition = Plugin.CfgUiSortByPosition == null || Plugin.CfgUiSortByPosition.Value;
+
+            var keys = new List<ItemKey>(PageItems.Count);
+            for (int i = 0; i < PageItems.Count; i++)
+            {
+                Component s = PageItems[i];
+                Group owner = null;
+                for (int gi = 0; gi < PageGroups.Count; gi++)
+                {
+                    if (PageGroups[gi].Items.Contains(s)) { owner = PageGroups[gi]; break; }
+                }
+
+                var k = new ItemKey { S = s, Row = int.MinValue, Left = float.MaxValue, Path = null };
+                try
+                {
+                    RectTransform rt = s != null ? As<RectTransform>(s.transform) : null;
+                    if (byPosition && rt != null && owner != null)
+                    {
+                        float top, left;
+                        if (ScreenTopLeft(rt, owner.Camera, out top, out left))
+                        {
+                            k.Left = left;
+                            k.Row = Mathf.RoundToInt(top / 4f);   // 4 像素一档，避免非传递比较
+                        }
+                    }
+                    if (s != null && owner != null) k.Path = PathIndices(s.transform, owner.Root).ToArray();
+                }
+                catch { }
+                keys.Add(k);
+            }
+
+            if (byPosition) keys.Sort(CompareKey);
+            else keys.Sort(ComparePathOnly);
+
+            PageItems.Clear();
+            for (int i = 0; i < keys.Count; i++) PageItems.Add(keys[i].S);
+        }
+
+        /// <summary>整页有多少个「点得动」的控件（只读兜底进来的不算）。</summary>
+        private static int UsableCountOfPage()
+        {
+            int n = 0;
+            for (int i = 0; i < PageGroups.Count; i++) n += UsableCount(PageGroups[i]);
+            return n;
         }
 
         /// <summary>页面的人话名字（从控件路径里认面板；认不出就叫「当前界面」）。</summary>
@@ -644,8 +822,14 @@ namespace NoExistenceA11y
         private static void IdleDetect()
         {
             float now = Time.realtimeSinceStartup;
+            // 玩家刚按过键 → 立刻回到最勤快的扫描节奏（菜单可能是刚被按键叫出来的）；
+            // 长时间没有输入（被动听剧情/自动阅读）→ 逐步退避，省下空转的扫描开销。
+            if (Input.anyKeyDown) _lastUserInputAt = now;
+            if (_lastUserInputAt <= 0f) _lastUserInputAt = now;   // 启动后第一次：按最勤快节奏来
             if (now < _nextIdleScan) return;
-            _nextIdleScan = now + 0.35f;
+            float quiet = now - _lastUserInputAt;
+            float interval = quiet < 0.8f ? 0.35f : (quiet < 3f ? 0.7f : 1.4f);
+            _nextIdleScan = now + interval;
 
             if (!SceneStable()) { _candidateSince = -1f; return; }
             // 正在打字（输入框拿着焦点）时不去接管界面
@@ -655,11 +839,24 @@ namespace NoExistenceA11y
             if (Groups.Count == 0 || Items.Count == 0 || !PageStillAlive())
             {
                 _candidateSince = -1f;
+                _candidateKey = "";
+                _candidateScans = 0;
                 return;
             }
-            if (_candidateSince < 0f) { _candidateSince = now; return; }
-            // 面板淡入/滑入时控件会先出现、位置还没稳定，等一小会儿再接
+
+            string key = PageKey();
+            // 面板淡入/滑入时控件会先出现、数量和位置还没稳定：要求**连续两次扫描**
+            // 看到同一个页面再接管，避免「接管到只有一半控件的半成品界面」。
+            if (_candidateSince < 0f || key.Length == 0 || key != _candidateKey)
+            {
+                _candidateSince = now;
+                _candidateKey = key;
+                _candidateScans = 1;
+                return;
+            }
+            _candidateScans++;
             if (now - _candidateSince < 0.2f) return;
+            if (_candidateScans < 2) return;
             Engage(false);
         }
 
@@ -703,11 +900,25 @@ namespace NoExistenceA11y
             }
 
             _index = Mathf.Clamp(_index, 0, Items.Count - 1);
+
+            // ★ 保留焦点：按对象身份把原来的当前项找回新清单里的位置。
+            //   无脑 Clamp 旧下标时，前面插进/删掉一项会让读屏焦点悄悄漂到隔壁，
+            //   玩家按回车就点错了。
+            if (before != null)
+            {
+                int found = Items.IndexOf(before);
+                if (found >= 0) _index = found;
+            }
             Component now = CurrentItem();
+            bool settling = Time.realtimeSinceStartup < _settleUntil;
             bool listChanged = !SameList(beforeList, Items);
             if (now != before || listChanged)
             {
-                if (activationRescan)
+                if (settling)
+                {
+                    // 动画期：只更新内部状态，不播报，等面板稳定
+                }
+                else if (activationRescan)
                 {
                     Announce("界面已更新。");
                 }
@@ -769,17 +980,25 @@ namespace NoExistenceA11y
             Groups.Clear();
             _inputRoles.Clear();   // 实例 ID 会在对象销毁后被复用，每次重扫都重算
             _rescanRequestedFor = null;
+            _excludedModalRoot = "";
+            _excludedModalOrder = int.MinValue;
             if (!SceneStable()) return;
 
             try
             {
                 bool diag = Plugin.CfgDiag != null && Plugin.CfgDiag.Value;
-                List<string> excluded = diag ? new List<string>() : null;
+                // 详细清单（「全部 Selectable」「有控件但没纳入导航」）非常贵：一次几百行，
+                // 整场会话能写出 10MB 日志，是玩家反馈「补丁让游戏更卡」的主要来源之一。
+                // 现在只在配置打开、并且「距上次 dump 超过 10 秒」或测试模式下才写；
+                // 一行统计照旧，方便玩家报告问题时贴日志。
+                bool dump = diag && (Plugin.TestMode
+                    || Time.realtimeSinceStartup - _lastDumpAt > 10f);
+                List<string> excluded = dump ? new List<string>() : null;
                 int inactive = 0, noCanvas = 0, inactiveScene = 0, blockedCount = 0, notInteractable = 0, nonMenuCount = 0;
                 Scene activeScene = SceneManager.GetActiveScene();
 
                 Selectable[] all = Resources.FindObjectsOfTypeAll<Selectable>();
-                List<string> allDump = diag ? new List<string>() : null;
+                List<string> allDump = dump ? new List<string>() : null;
                 for (int i = 0; i < all.Length; i++)
                 {
                     Selectable s = all[i];
@@ -804,7 +1023,7 @@ namespace NoExistenceA11y
                     if (!s.isActiveAndEnabled)
                     {
                         inactive++;
-                        if (diag && inactiveScene < 20 && s.gameObject.scene.IsValid()
+                        if (dump && inactiveScene < 20 && s.gameObject.scene.IsValid()
                             && s.gameObject.scene == activeScene)
                         {
                             excluded.Add("[未激活] " + PathOf(s.transform));
@@ -820,13 +1039,13 @@ namespace NoExistenceA11y
                     //   它能被导航到、能被回车激活，一按就把游戏扔进裸剧本，
                     //   绕开正常流程状态机 —— 实测结果是黑屏 + 有音乐 + 无任何响应，
                     //   只能 Alt+F4。这不是游戏的问题，是我们不该把它扫进来。
-                    if (Blocked(s.transform, diag ? excluded : null)) { blockedCount++; continue; }
+                    if (Blocked(s.transform, dump ? excluded : null)) { blockedCount++; NoteExcludedModal(s.transform); continue; }
 
                     // ★ 非菜单界面（对话 HUD、字幕、跳过提示、载入、过场、QTE……）不自动接管。
                     //   这些界面没有「可选项」，而且回车必须留给游戏推进剧情 ——
                     //   否则玩家一按回车就被 HUD 按钮吃掉，剧情推不动。
                     //   名单见 CfgUiMenuExcludePaths，用路径片段匹配。
-                    if (NonMenu(s.transform)) { nonMenuCount++; continue; }
+                    if (NonMenu(s.transform)) { nonMenuCount++; NoteExcludedModal(s.transform); continue; }
 
                     // 整屏「点击穿透层 / 推进热区」按钮：能点，但当作导航项毫无意义，
                     // 焦点停在它上面只会让玩家以为界面没东西可点。
@@ -848,7 +1067,7 @@ namespace NoExistenceA11y
                         if (usable) g.Items.Add(s);
                         else g.ReadOnly.Add(s);
                     }
-                    else if (diag && noCanvas < 10)
+                    else if (dump && noCanvas < 10)
                     {
                         excluded.Add("[不在 Canvas 下] " + PathOf(s.transform));
                         noCanvas++;
@@ -871,36 +1090,54 @@ namespace NoExistenceA11y
                 if (!string.IsNullOrEmpty(wl))
                 {
                     string[] frags = wl.Split(',');
-                    var texts = Resources.FindObjectsOfTypeAll<TMPro.TMP_Text>();
-                    int addedText = 0;
-                    for (int i = 0; i < texts.Length; i++)
+
+                    // 白名单文字只有那些面板真的在场时才值得扫：全量
+                    // FindObjectsOfTypeAll<TMP_Text> 在对话/加载期是纯开销
+                    // （回想、笔记本都不在场，扫出来的字一个也用不上）。
+                    bool anyWlGroup = false;
+                    for (int gi = 0; gi < Groups.Count && !anyWlGroup; gi++)
                     {
-                        var tx = texts[i];
-                        if (tx == null || tx.gameObject == null) continue;
-                        if (!tx.gameObject.activeInHierarchy) continue;
-
-                        string body = tx.text;
-                        if (string.IsNullOrEmpty(body) || body.Trim().Length == 0) continue;
-
-                        // 控件自己的标签不算
-                        try { if (tx.GetComponentInParent<Selectable>() != null) continue; } catch { }
-
-                        string path = PathOf(tx.transform);
-                        bool hit = false;
+                        string rp = Groups[gi].Root != null ? PathOf(Groups[gi].Root) : "";
                         for (int k = 0; k < frags.Length; k++)
                         {
-                            string f = frags[k].Trim();
-                            if (f.Length > 0 && path.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0) { hit = true; break; }
+                            string f0 = frags[k].Trim();
+                            if (f0.Length > 0 && rp.IndexOf(f0, StringComparison.OrdinalIgnoreCase) >= 0) { anyWlGroup = true; break; }
                         }
-                        if (!hit) continue;
-                        if (NonMenu(tx.transform)) continue;
-                        if (HiddenByCanvasGroup(tx.transform)) continue;
-
-                        Group g = GroupOf(tx);
-                        if (g != null) { g.Items.Add(tx); addedText++; }
                     }
-                    if (diag && addedText > 0 && Plugin.L != null)
-                        Plugin.L.LogInfo("[UiNav] 白名单文字纳入导航 " + addedText + " 条（" + wl + "）");
+
+                    if (anyWlGroup)
+                    {
+                        var texts = Resources.FindObjectsOfTypeAll<TMPro.TMP_Text>();
+                        int addedText = 0;
+                        for (int i = 0; i < texts.Length; i++)
+                        {
+                            var tx = texts[i];
+                            if (tx == null || tx.gameObject == null) continue;
+                            if (!tx.gameObject.activeInHierarchy) continue;
+
+                            string body = tx.text;
+                            if (string.IsNullOrEmpty(body) || body.Trim().Length == 0) continue;
+
+                            // 控件自己的标签不算
+                            try { if (tx.GetComponentInParent<Selectable>() != null) continue; } catch { }
+
+                            string path = PathOf(tx.transform);
+                            bool hit = false;
+                            for (int k = 0; k < frags.Length; k++)
+                            {
+                                string f = frags[k].Trim();
+                                if (f.Length > 0 && path.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0) { hit = true; break; }
+                            }
+                            if (!hit) continue;
+                            if (NonMenu(tx.transform)) continue;
+                            if (HiddenByCanvasGroup(tx.transform)) continue;
+
+                            Group g = GroupOf(tx);
+                            if (g != null) { g.Items.Add(tx); addedText++; }
+                        }
+                        if (diag && addedText > 0 && Plugin.L != null)
+                            Plugin.L.LogInfo("[UiNav] 白名单文字纳入导航 " + addedText + " 条（" + wl + "）");
+                    }
                 }
 
                 if (allDump != null && Plugin.L != null)
@@ -917,7 +1154,7 @@ namespace NoExistenceA11y
                 int removedByVisibility = 0;
                 bool strict = Plugin.CfgUiVisibleOnly == null || Plugin.CfgUiVisibleOnly.Value;
 
-                if (strict) FilterByVisibility(true, diag ? excluded : null, ref removedByVisibility);
+                if (strict) FilterByVisibility(true, dump ? excluded : null, ref removedByVisibility);
 
                 // ★ 这里曾经有一个「自愈兜底」：严格控制后一个都不剩时，退回
                 //   「只要是激活的 Selectable 就全收」。那是为了修「菜单里什么都读不到」——
@@ -928,7 +1165,7 @@ namespace NoExistenceA11y
                 //
                 //   原则：无障碍层只能让「已经可见、本来就能点」的东西变得可键盘操作，
                 //   绝不能扩大可达范围。筛完没剩下东西，就诚实地告诉玩家没东西可导航。
-                if (strict && removedByVisibility > 0)
+                if (dump && strict && removedByVisibility > 0)
                     DiagScan("严格可见性判定筛掉了 " + removedByVisibility + " 个控件（不做兜底，避免暴露隐藏面板）");
 
                 // ★ 「整屏控件都不可用」的**只读**兜底（与上面删掉的「自愈兜底」不是一回事）。
@@ -960,13 +1197,14 @@ namespace NoExistenceA11y
                     readOnlyKept += g.Items.Count;
                 }
                 if (readOnlyKept > 0)
-                    DiagScan("这一屏没有能按的控件，纳入 " + readOnlyKept
-                        + " 个（只读的只念不点；看得见但点不到的照常可激活）");
+                    DiagScan("这一屏没有能按的控件，纳入 " + readOnlyKept + " 个（只读的只念不点）");
 
-                if (diag && Plugin.L != null)
+                int kept = 0;
+                for (int i = 0; i < Groups.Count; i++) kept += Groups[i].Items.Count;
+                // 统计行只在真的有界面（kept > 0）或本次要写详细 dump 时才打：
+                // 对话/加载期每 0.5 秒一行「0 组」没有信息量，只会撑大日志。
+                if (diag && Plugin.L != null && (kept > 0 || dump))
                 {
-                    int kept = 0;
-                    for (int i = 0; i < Groups.Count; i++) kept += Groups[i].Items.Count;
                     Plugin.L.LogInfo(string.Format(
                         "[UiNav] Selectable 总数={0} 未激活={1} 不在Canvas下={2} 开发者面板排除={3} 非菜单/穿透层排除={4} 不可用={5} 被可见性筛掉={6} 最终纳入={7}（其中只读 {8}）",
                         all.Length, inactive, noCanvas, blockedCount, nonMenuCount, notInteractable, removedByVisibility, kept, readOnlyKept));
@@ -980,8 +1218,9 @@ namespace NoExistenceA11y
                 });
                 Groups.RemoveAll(g => g.Items.Count == 0);
                 for (int i = 0; i < Groups.Count; i++) SortWithin(Groups[i]);
+                SelectPage();   // ★ 页面合并：同一界面根下的多个 Canvas 组合成一页
 
-                if (diag && Plugin.L != null)
+                if (dump && Plugin.L != null)
                 {
                     var sb = new StringBuilder();
                     sb.Append("[UiNav] 扫描到 ").Append(Groups.Count).Append(" 组：");
@@ -993,7 +1232,7 @@ namespace NoExistenceA11y
                     Plugin.L.LogInfo(sb.ToString());
                 }
 
-                DumpScan(excluded);
+                if (dump) DumpScan(excluded);
             }
             catch (Exception e)
             {
@@ -1005,6 +1244,30 @@ namespace NoExistenceA11y
         private static void DiagScan(string msg)
         {
             try { if (Plugin.L != null) Plugin.L.LogInfo("[UiNav] " + msg); } catch { }
+        }
+
+        /// <summary>
+        /// 记录「被排除、但仍显示在最上层」的模态界面（存档读档、选项、开发者面板、QTE/加载/电影…）。
+        /// 目的不是去操作它，而是**别让键盘操作点穿到它背后的界面**：
+        /// 存档面板盖在标题画面上时，回车绝不能变成点 START。
+        /// </summary>
+        private static void NoteExcludedModal(Transform t)
+        {
+            try
+            {
+                string path = PathOf(t);
+                if (path.IndexOf("/ModalUI/", StringComparison.OrdinalIgnoreCase) < 0) return;
+                string root = UiRootOf(t);
+                if (string.IsNullOrEmpty(root)) return;
+                Canvas c = t.GetComponentInParent<Canvas>();
+                int order = c != null ? c.sortingOrder : 0;
+                if (order > _excludedModalOrder)
+                {
+                    _excludedModalOrder = order;
+                    _excludedModalRoot = root;
+                }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -1094,40 +1357,37 @@ namespace NoExistenceA11y
         }
 
         /// <summary>
-        /// 「能按的」那一篮的过滤：过严格的可见性判定；被筛掉的那些如果**只是点不到**
-        /// （alpha 还在、还在画面矩形里），留进 Blocked 备用 ——
-        /// 整组一个能按的都不剩时它们会被当导航项收回来。
-        /// 典型例子是彩蛋设置界面里的「返回」：`interactable = true`，
-        /// 但父级 CanvasGroup 关了交互，严格判定会把它判成"画面外或点不到"，
-        /// 于是玩家**被困在那一屏里出不来**（实测反馈）。
+        /// 「能按的」那一篮的可见性过滤：只把**真正看不见**的（画面外 / CanvasGroup 隐藏）剔掉。
+        ///
+        /// 以前这里还要求「射线打得到」，打不到的收进 Blocked 备用，于是出过两次
+        /// 玩家被困死的问题：
+        ///   · CG 画廊的返回按钮在 Top 组，射线被画廊格子挡住；
+        ///   · TipsUI 等界面的返回按钮被上层覆盖物挡住。
+        /// 游戏按钮的 onClick 根本不看射线，我们程序化激活也不看射线 —— 用「点不到」
+        /// 当排除理由只会把出口藏起来。实测日志里这类控件都是 active、interactable、
+        /// 在画面矩形内，唯一原因就是优先级更高的东西盖在上面。
         /// </summary>
         private static void FilterBlocked(Group g, bool record, List<string> excluded, ref int removed)
         {
-            var blocked = new List<Component>();
             int n = 0;
             g.Items.RemoveAll(s =>
             {
                 bool ok;
-                // 判定本身抛异常时按「可见」处理 —— 宁可多念一个，也不要整组消失
-                try { ok = VisiblyClickable(s, g); } catch { ok = true; }
+                // 只做**便宜的**可见性判定：alpha + 画面矩形。
+                //   游戏按钮的 onClick 根本不看射线，我们程序化激活也不看射线 —— 用「点不到」
+                //   当排除理由只会把出口藏起来（画廊/Tips 返回按钮被困死就是这么来的）。
+                //   旧版这里逐项 RaycastAll，一场游戏约 2.9 万次射线 + 5.8 万次分配，
+                //   是补丁卡顿最大的一笔单项开销，0.2.1 起不再做。
+                // 判定本身抛异常时按「可见」处理 —— 宁可多念一个，也不要整组消失。
+                try { ok = !AlphaHidden(s.transform) && OnScreenOnly(s, g); } catch { ok = true; }
                 if (ok) return false;
 
                 n++;
-                bool visible = false;
-                try { visible = !AlphaHidden(s.transform) && OnScreenOnly(s, g); } catch { visible = false; }
-                if (visible) blocked.Add(s);
-                else if (record && excluded != null && excluded.Count < 60)
-                    excluded.Add("[画面外或点不到] " + PathOf(s.transform));
+                if (record && excluded != null && excluded.Count < 60)
+                    excluded.Add("[画面外] " + PathOf(s.transform));
                 return true;
             });
             removed += n;
-
-            if (blocked.Count > 0)
-            {
-                g.Blocked.AddRange(blocked);
-                if (record && excluded != null && excluded.Count < 60)
-                    excluded.Add("[看得见但点不到] " + blocked.Count + " 个（整屏没有能按的时才收回来）");
-            }
         }
 
         /// <summary>
@@ -1488,26 +1748,26 @@ namespace NoExistenceA11y
                 if (Plugin.L == null) return;
 
                 var sb = new StringBuilder();
-                sb.Append("[UiNav] ===== 诊断：共 ").Append(Groups.Count).Append(" 组 =====");
+                sb.Append("[UiNav] ===== 诊断：共 ").Append(Groups.Count)
+                  .Append(" 组（本页 ").Append(PageGroups.Count)
+                  .Append(" 组 / ").Append(PageItems.Count).Append(" 项）=====");
                 for (int gi = 0; gi < Groups.Count; gi++)
                 {
                     Group g = Groups[gi];
-                    sb.Append("\n[组 ").Append(gi + 1).Append(gi == 0 ? " ★当前" : "")
+                    bool inPage = PageGroups.IndexOf(g) >= 0;
+                    sb.Append("\n[组 ").Append(gi + 1).Append(gi == 0 ? " ★最上层" : "")
+                      .Append(inPage ? " ●本页" : "")
                       .Append("] ").Append(g.Root != null ? PathOf(g.Root) : "?")
                       .Append("  项数=").Append(g.Items.Count);
                 }
-                if (Groups.Count > 0)
+                for (int i = 0; i < PageItems.Count && i < 16; i++)
                 {
-                    Group g = Groups[0];
-                    for (int i = 0; i < g.Items.Count && i < 14; i++)
-                    {
-                        Component s = g.Items[i];
-                        string desc = "?";
-                        try { desc = Describe(s); } catch (Exception e) { desc = "<Describe 抛异常: " + e.Message + ">"; }
-                        sb.Append("\n  #").Append(i + 1).Append(' ').Append(desc)
-                          .Append("   [").Append(s != null ? RowLeftOf(s) : "null").Append(']')
-                          .Append("  ").Append(s != null ? PathOf(s.transform) : "null");
-                    }
+                    Component s = PageItems[i];
+                    string desc = "?";
+                    try { desc = Describe(s); } catch (Exception e) { desc = "<Describe 抛异常: " + e.Message + ">"; }
+                    sb.Append("\n  #").Append(i + 1).Append(' ').Append(desc)
+                      .Append("   [").Append(s != null ? RowLeftOf(s) : "null").Append(']')
+                      .Append("  ").Append(s != null ? PathOf(s.transform) : "null");
                 }
                 if (excluded != null && excluded.Count > 0)
                 {
@@ -1516,6 +1776,7 @@ namespace NoExistenceA11y
                 }
                 sb.Append("\n[UiNav] ==== 诊断结束 ====");
                 Plugin.L.LogInfo(sb.ToString());
+                _lastDumpAt = Time.realtimeSinceStartup;
             }
             catch (Exception e)
             {
@@ -1595,8 +1856,17 @@ namespace NoExistenceA11y
             { "VoiceLocalePanel",    "角色语音语言" },
 
             // ---- 标题画面那条没有任何文字的隐藏滑条（游戏自带的隐藏成就）----
-            // 它没有可见标签，上溯只能拿到对象名 Image_Title，照着念等于没念。
-            { "Image_Title",         "标题画面滑条" },
+            // RE 取证：TitleUI/LogoPanel/Image_Title/Slider 是 SnappableSlider（0～1.5），
+            // 唯一监听是 DissolveController → Material.SetFloat("_DissolveValue")，
+            // 只影响标题插画的溶解/显隐外观，不切标题、不影响成就与音效。
+            { "Image_Title",         "标题插画显隐" },
+
+            // ---- 设置界面里的美术字按钮（「你的设置」/「我的设置」标题上的「你」/「我」）----
+            // RE 取证：普通 UnityEngine.UI.Button@SettingsUI/{PlayerView,CharacterView}/TitlePanel/
+            // TextPlayer(TextCharacter)，text 就是「你」/「我」；游戏按结局状态用
+            // SetUIState 启用/禁用，启用时我们就能导航到，禁用时鼠标也点不动，不是补丁漏扫。
+            { "TextPlayer",          "设置视图切换" },
+            { "TextCharacter",       "设置视图切换" },
 
             // ---- 纯图片按钮 ----
             { "Yes",     "确定" },
@@ -2013,7 +2283,7 @@ namespace NoExistenceA11y
             // 注意：纯文本页（回想条目 / 笔记本）本来就没有 Selectable，别误报「都不可用」。
             try
             {
-                if (HasSelectableItem() && UsableCount(Groups[0]) == 0)
+                if (HasSelectableItem() && UsableCountOfPage() == 0)
                     prefix += "这一屏的控件当前都不可用，只能听，不能选。";
             }
             catch { }
@@ -2323,7 +2593,13 @@ namespace NoExistenceA11y
                     _sceneChangedAt = Time.realtimeSinceStartup;
                     if (_active) Disengage(false);
                     Groups.Clear();
+                    PageGroups.Clear();
+                    PageItems.Clear();
                     _candidateSince = -1f;
+                    _candidateKey = "";
+                    _candidateScans = 0;
+                    _excludedModalRoot = "";
+                    _excludedModalOrder = int.MinValue;
                     _pendingActivationAt = -1f;
                     return;
                 }
@@ -2333,6 +2609,19 @@ namespace NoExistenceA11y
             // ---- 输入框正在收打字：我们一个键都别碰 ----
             if (InputFieldFocused())
             {
+                ClearQuitConfirm();
+                return;
+            }
+
+            // ---- 选项框出现：键盘完全让给数字键 1–9（Choices 模块），UiNav 不接管 ----
+            //   选项面板可能不在 Naninovel 的 /ModalUI 根下（自定义选项界面），
+            //   只靠路径排除不可靠；这里用 Choices.Live 做不依赖路径的让行判断。
+            if (Choices.Live)
+            {
+                if (_active) Disengage(false);
+                _candidateSince = -1f;
+                _candidateKey = "";
+                _candidateScans = 0;
                 ClearQuitConfirm();
                 return;
             }
