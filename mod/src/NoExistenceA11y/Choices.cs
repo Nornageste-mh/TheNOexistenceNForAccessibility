@@ -37,6 +37,15 @@ namespace NoExistenceA11y
         private static string _announcedKey = "";
         private static int _lastChildCount = -1;
 
+        // 上下键浏览到的选项（0 基）。数字键仍可直接选，两条路都走 Activate()。
+        private static int _choiceIndex;
+
+        // 选项面板在场时，替它挡住 Continue/Submit：回车只用来确认选项，
+        // 不会被游戏同时当成「推进一句」。做法与 UiNav 接管界面时一致。
+        private static bool _inputBlocked;
+        private static Naninovel.UI.IManagedUI _blockedUi;
+        private static float _nextBlockTry;
+
         /// <summary>由 Harmony 在 AddChoiceButton 之后调用：只记下面板，不做朗读。</summary>
         internal static void OnButtonAdded(Naninovel.UI.ChoiceHandlerPanel panel)
         {
@@ -177,8 +186,12 @@ namespace NoExistenceA11y
             if (!live)
             {
                 if (_labels.Count > 0) { _labels.Clear(); _buttons.Clear(); _announcedKey = ""; }
+                _choiceIndex = 0;
+                ReleaseInputBlock();
                 return;
             }
+
+            if (!_inputBlocked) BlockInput();
 
             bool wantRead = Plugin.CfgReadChoices == null || Plugin.CfgReadChoices.Value;
 
@@ -210,7 +223,9 @@ namespace NoExistenceA11y
                     for (int i = 0; i < _labels.Count; i++)
                         sb.Append("选项 ").Append(i + 1).Append("：").Append(_labels[i]).Append("。");
                     if (Plugin.CfgChoiceHotkeys == null || Plugin.CfgChoiceHotkeys.Value)
-                        sb.Append("按数字键选择。");
+                        sb.Append("按数字键选择，或用上下键浏览、回车确认。");
+                    else
+                        sb.Append("用上下键浏览、回车确认。");
 
                     string announce = sb.ToString();
                     Plugin.Remember(announce);            // 退格能重读整组选项
@@ -219,46 +234,129 @@ namespace NoExistenceA11y
                 Plugin.Diag("CHOICE 播报 " + _labels.Count + " 项: " + key);
             }
 
-            // ---- 数字键直选 ----
-            if (Plugin.CfgChoiceHotkeys == null || !Plugin.CfgChoiceHotkeys.Value) return;
             if (_buttons.Count == 0) return;
+            if (_choiceIndex < 0) _choiceIndex = 0;
+            if (_choiceIndex >= _buttons.Count) _choiceIndex = _buttons.Count - 1;
 
-            int pick = 0;
-            try
+            // ---- 数字键直选 ----
+            if (Plugin.CfgChoiceHotkeys == null || Plugin.CfgChoiceHotkeys.Value)
             {
-                for (int i = 1; i <= 9; i++)
+                int pick = 0;
+                try
                 {
-                    if (Input.GetKeyDown(KeyCode.Alpha0 + i) || Input.GetKeyDown(KeyCode.Keypad0 + i))
+                    for (int i = 1; i <= 9; i++)
                     {
-                        pick = i;
-                        break;
+                        if (Input.GetKeyDown(KeyCode.Alpha0 + i) || Input.GetKeyDown(KeyCode.Keypad0 + i))
+                        {
+                            pick = i;
+                            break;
+                        }
                     }
                 }
-            }
-            catch { return; }
-            if (pick == 0) return;
+                catch { return; }
 
-            if (pick > _buttons.Count)
-            {
-                Speech.Speak("只有 " + _buttons.Count + " 个选项。", true);
-                return;
+                if (pick != 0)
+                {
+                    if (pick > _buttons.Count) { Speech.Speak("只有 " + _buttons.Count + " 个选项。", true); return; }
+                    Activate(pick - 1, wantRead);
+                    return;
+                }
             }
 
+            // ---- 上下键浏览 + 回车确认（与数字键并列的另一条路）----
             try
             {
-                var b = _buttons[pick - 1];
-                if (b == null || b.gameObject == null) { Speech.Speak("选项已失效。", true); return; }
+                if (Input.GetKeyDown(KeyCode.UpArrow))
+                {
+                    _choiceIndex = (_choiceIndex - 1 + _buttons.Count) % _buttons.Count;
+                    SpeakChoice();
+                    return;
+                }
+                if (Input.GetKeyDown(KeyCode.DownArrow))
+                {
+                    _choiceIndex = (_choiceIndex + 1) % _buttons.Count;
+                    SpeakChoice();
+                    return;
+                }
+                if (Input.GetKeyDown(KeyCode.Home)) { _choiceIndex = 0; SpeakChoice(); return; }
+                if (Input.GetKeyDown(KeyCode.End)) { _choiceIndex = _buttons.Count - 1; SpeakChoice(); return; }
 
-                if (wantRead) Speech.Speak(_labels[pick - 1], true);   // 复述一遍，确认选的是哪个
-
-                b.onClick.Invoke();
-                Plugin.Diag("CHOICE 数字键 " + pick + " -> " + _labels[pick - 1]);
+                if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter) || Input.GetKeyDown(KeyCode.Space))
+                {
+                    Activate(_choiceIndex, wantRead);
+                    return;
+                }
             }
             catch (Exception e)
             {
-                Plugin.Diag("Choices.Update: " + e.Message);
+                Plugin.Diag("Choices.Update(键盘): " + e.Message);
+            }
+        }
+
+        /// <summary>播报当前浏览到的选项（上下键移动时用，打断上一次）。</summary>
+        private static void SpeakChoice()
+        {
+            try
+            {
+                if (_choiceIndex < 0 || _choiceIndex >= _labels.Count) return;
+                Speech.Speak("选项 " + (_choiceIndex + 1) + "，共 " + _labels.Count + "：" + _labels[_choiceIndex], true);
+            }
+            catch { }
+        }
+
+        /// <summary>选中第 index 项（0 基）：数字键与回车共用这一个出口。</summary>
+        private static void Activate(int index, bool speakLabel)
+        {
+            try
+            {
+                if (index < 0 || index >= _buttons.Count) { Speech.Speak("选项已失效。", true); return; }
+                var b = _buttons[index];
+                if (b == null || b.gameObject == null) { Speech.Speak("选项已失效。", true); return; }
+
+                if (speakLabel) Speech.Speak(_labels[index], true);   // 复述一遍，确认选的是哪个
+
+                _choiceIndex = index;
+                b.onClick.Invoke();
+                Plugin.Diag("CHOICE 激活 " + (index + 1) + " -> " + _labels[index]);
+            }
+            catch (Exception e)
+            {
+                Plugin.Diag("Choices.Activate: " + e.Message);
                 Speech.Speak("选择失败。", true);
             }
+        }
+
+        /// <summary>选项面板在场时替它挡住 Continue/Submit：回车只用来确认选项，不会顺带推进剧情。</summary>
+        private static void BlockInput()
+        {
+            if (Time.realtimeSinceStartup < _nextBlockTry) return;
+            _nextBlockTry = Time.realtimeSinceStartup + 1f;
+            try
+            {
+                var panel = Panel();
+                if (panel == null) return;
+                var im = Naninovel.Engine.GetService<Naninovel.IInputManager>();
+                if (im == null) return;
+                var ui = UiNav.FindManagedUi(panel.transform);
+                if (ui == null) return;
+                im.AddBlockingUI(ui, new string[] { "Continue", "Submit" });
+                _blockedUi = ui;
+                _inputBlocked = true;
+            }
+            catch (Exception e) { Plugin.Diag("Choices.BlockInput: " + e.Message); }
+        }
+
+        private static void ReleaseInputBlock()
+        {
+            if (!_inputBlocked) return;
+            _inputBlocked = false;
+            try
+            {
+                var im = Naninovel.Engine.GetService<Naninovel.IInputManager>();
+                if (im != null && _blockedUi != null) im.RemoveBlockingUI(_blockedUi);
+            }
+            catch { }
+            _blockedUi = null;
         }
     }
 

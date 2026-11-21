@@ -22,6 +22,12 @@ namespace NoExistenceA11y
         /// </summary>
         public const string Version = "0.2.1.0";
 
+        /// <summary>
+        /// 显示用版本标签：与 Version 分开，方便区分同为 0.2.1.0 的迭代测试包。
+        /// 只在日志头、文档里出现；BepInPlugin 用的仍必须是纯数字的 Version。
+        /// </summary>
+        public const string VersionLabel = "0.2.1.0 Preview EXP1";
+
         internal static ManualLogSource L;
 
         internal static ConfigEntry<bool> CfgEnabled;
@@ -358,7 +364,7 @@ namespace NoExistenceA11y
             try
             {
                 File.WriteAllText(DiagPath,
-                    "=== NoExistence A11y v" + Version + "  " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ===\n",
+                    "=== NoExistence A11y v" + VersionLabel + "  " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ===\n",
                     new UTF8Encoding(false));
             }
             catch { }
@@ -812,9 +818,17 @@ namespace NoExistenceA11y
     /// <summary>订阅 Naninovel 的打印事件，拿到 AuthorId 与行号引用。</summary>
     public class A11yBehaviour : MonoBehaviour
     {
+        /// <summary>给 UiNav 起协程用（引擎异步 API 的 ToCoroutine 需要 MonoBehaviour）。</summary>
+        public static A11yBehaviour Instance;
+
         private bool _speechInited;
         private bool _subscribed;
         private int _ticks;
+
+        public void Awake()
+        {
+            Instance = this;
+        }
 
         public void Update()
         {

@@ -235,6 +235,18 @@ namespace NoExistenceA11y
         // 平时自动接管仍把 ControlUI 排除在外（否则回车会抢去点 HUD、剧情推不动）。
         private static bool _scanHud;
 
+        // 剧情期纯键盘游玩时，游戏根本没把 HUD（ControlUI）实例化出来 —— 日志里它只以
+        // 「[未激活] {}(资源) ControlUI/Buttons/HistoryButton」这种 prefab 资源形式存在。
+        // 所以按热键时先请引擎把它显示出来，再在 1.5 秒内反复重扫，等它实例化/淡入。
+        private static float _hudRetryUntil = -1f;
+        private static float _hudNextTry;
+
+        // 我们手动实例化出来的 HUD：退出界面操作时还原（避免游戏本来没显示 HUD，我们却一直挂着）。
+        private static Naninovel.UI.IManagedUI _hudOwnedUi;
+        private static bool _hudOwned;
+        private static float _hudPrefabTriedAt = -1f;
+        private static bool _hudAsyncStarted;
+
         // 接管期间把当前页面登记成「挡住 Continue/Submit」的 Naninovel UI（引擎官方机制）：
         // 这样回车/空格只激活我们的控件，不会顺手推进一句剧情；Esc（Cancel）不受影响。
         private static Naninovel.UI.IManagedUI _blockedUi;
@@ -270,12 +282,297 @@ namespace NoExistenceA11y
             try { Scan(); }
             finally { _scanHud = false; }
 
-            if (Groups.Count == 0 || Items.Count == 0)
+            if (Groups.Count > 0 && Items.Count > 0)
             {
-                Speech.Speak("当前没有可以操作的界面按钮。", true);
+                Engage(true);
                 return;
             }
-            Engage(true);
+
+            // 纯键盘游玩时游戏从没把 ControlUI 实例化出来（日志里它只以 prefab 资源
+            // 形式存在），所以这里先请引擎把这块 UI 显示出来。显示是异步的，同一帧
+            // 扫不到，接下来 1.5 秒内反复重扫。
+            if (TryRevealGameHud())
+            {
+                float now = Time.realtimeSinceStartup;
+                _hudRetryUntil = now + 1.5f;
+                _hudNextTry = 0f;
+                Speech.Speak("正在打开对话界面按钮。", false);
+                return;
+            }
+            Speech.Speak("当前没有可以操作的界面按钮。", true);
+        }
+
+        /// <summary>1.5 秒重试窗口：HUD 扫到就接管，超时播一句明确的话。</summary>
+        private static void HudRetry()
+        {
+            float now = Time.realtimeSinceStartup;
+            if (now >= _hudRetryUntil)
+            {
+                _hudRetryUntil = -1f;
+                Speech.Speak("没能打开对话界面按钮。", true);
+                return;
+            }
+            if (now < _hudNextTry) return;
+            _hudNextTry = now + 0.2f;
+
+            _scanHud = true;
+            try { Scan(); }
+            finally { _scanHud = false; }
+
+            if (Groups.Count > 0 && Items.Count > 0)
+            {
+                _hudRetryUntil = -1f;
+                Engage(true);
+            }
+        }
+
+        /// <summary>
+        /// 请引擎把对话 HUD（ControlUI / ControlPanel）显示出来。
+        /// 先按配置名取 UI 实例并 Show()，失败再走引擎自己的「显示全部 UI」入口。
+        /// 任何一步失败都只记日志：HUD 只是便利入口，不能因此影响游戏本身。
+        /// </summary>
+        private static bool TryRevealGameHud()
+        {
+            try
+            {
+                var im = Naninovel.Engine.GetService<Naninovel.IUIManager>();
+                if (im == null) { HudLog("拿不到 IUIManager"); return false; }
+                HudLog("开始显示尝试（GetUI → AddUIAsync 实例化 → 兜底）");
+
+                string[] names = new string[] { "ControlUI", "ControlPanel", "ControlsUI", "Control" };
+                for (int i = 0; i < names.Length; i++)
+                {
+                    Naninovel.UI.IManagedUI ui = null;
+                    try { ui = im.GetUI(names[i]); }
+                    catch { ui = null; }
+                    if (ui == null) continue;
+                    if (SetUiVisible(ui))
+                    {
+                        HudLog("已通过 GetUI(\"" + names[i] + "\") 显示");
+                        return true;
+                    }
+                }
+
+                // RE 结论：GetUI 只查不建；实例化唯一正路是 UIManager.AddUIAsync
+                // （内部 Object.Instantiate → GetComponent<CustomUI> → ManagedUI 注册 → 初始化）。
+                if (TryInstantiateHudAsync())
+                {
+                    HudLog("已发起 AddUIAsync 实例化，等待回调");
+                    return true;
+                }
+
+                // 异步路线起不来时再赌一把裸实例化（protected InstantiatePrefab，反射调用）。
+                var fresh = InstantiateHudFromPrefab();
+                if (fresh != null && SetUiVisible(fresh))
+                {
+                    _hudOwnedUi = fresh;
+                    _hudOwned = true;
+                    HudLog("已从 prefab 实例化并显示");
+                    return true;
+                }
+
+
+                // 不再用 SetUIVisibleWithToggle 兜底：RE 确认它会把摄像机 UI 层一起关掉，
+                // 副作用远大于收益（可能把所有 UI 弄没）。到这里就是失败，只留诊断。
+
+                DumpHudDiagnostics(im);
+            }
+            catch (Exception e) { HudLog("显示尝试失败 " + e.Message); }
+            return false;
+        }
+
+        /// <summary>
+        /// 异步创建：UIManager.AddUIAsync 会「实例化 + 登记 + 初始化」，比反射调 InstantiatePrefab 完整。
+        /// 用引擎自带的 UniTaskExtensions.ToCoroutine 挂到 MonoBehaviour 上跑，回调里 Show 出来。
+        /// </summary>
+        private static bool TryInstantiateHudAsync()
+        {
+            if (_hudAsyncStarted) return true;   // 已发起，等回调
+            var runner = NoExistenceA11y.A11yBehaviour.Instance;
+            if (runner == null) { HudLog("AddUIAsync：没有 MonoBehaviour 宿主"); return false; }
+            var prefab = FindUiPrefab("ControlUI");
+            if (prefab == null) prefab = FindUiPrefab("ControlPanel");
+            if (prefab == null) { HudLog("AddUIAsync：内存里没有 ControlUI prefab"); return false; }
+            var im = Naninovel.Engine.GetService<Naninovel.IUIManager>();
+            if (im == null) { HudLog("AddUIAsync：拿不到 IUIManager"); return false; }
+            try
+            {
+                var task = im.AddUIAsync(prefab, "ControlUI", null);
+                var onOk = Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Il2CppSystem.Action<Naninovel.UI.IManagedUI>>(
+                    new System.Action<Naninovel.UI.IManagedUI>(OnHudAsyncDone));
+                var onErr = Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Il2CppSystem.Action<Il2CppSystem.Exception>>(
+                    new System.Action<Il2CppSystem.Exception>(ex => HudLog("AddUIAsync 失败 " + (ex == null ? "?" : ex.Message))));
+                var co = Naninovel.UniTaskExtensions.ToCoroutine<Naninovel.UI.IManagedUI>(task, onOk, onErr);
+                runner.StartCoroutine(co);
+                _hudAsyncStarted = true;
+                return true;
+            }
+            catch (Exception e) { HudLog("AddUIAsync 发起失败 " + e.Message); return false; }
+        }
+
+        private static void OnHudAsyncDone(Naninovel.UI.IManagedUI ui)
+        {
+            try
+            {
+                _hudAsyncStarted = false;
+                if (ui == null) { HudLog("AddUIAsync 回调为空"); return; }
+                if (SetUiVisible(ui))
+                {
+                    _hudOwnedUi = ui;
+                    _hudOwned = true;
+                    _hudRetryUntil = Time.realtimeSinceStartup + 1.5f;
+                    _hudNextTry = 0f;
+                    HudLog("AddUIAsync 完成并显示");
+                }
+            }
+            catch (Exception e) { HudLog("AddUIAsync 回调处理失败 " + e.Message); }
+        }
+
+        /// <summary>在内存里找名为 name 的 prefab 资源（不是场景实例）。</summary>
+        private static GameObject FindUiPrefab(string name)
+        {
+            try
+            {
+                var gos = Resources.FindObjectsOfTypeAll<GameObject>();
+                if (gos == null) return null;
+                for (int i = 0; i < gos.Length; i++)
+                {
+                    var go = gos[i];
+                    if (go == null || go.name != name) continue;
+                    if (go.scene.IsValid()) continue;   // 只要 prefab 资源
+                    return go;
+                }
+            }
+            catch (Exception e) { HudLog("找 prefab 失败 " + e.Message); }
+            return null;
+        }
+
+        /// <summary>
+        /// 游戏在纯键盘剧情期从不实例化 ControlUI；这里调 UIManager 的 protected InstantiatePrefab
+        /// 把已加载的 prefab 资源做成受引擎管理的 UI，然后由调用方 Show 出来。
+        /// </summary>
+        private static Naninovel.UI.IManagedUI InstantiateHudFromPrefab()
+        {
+            if (_hudOwned && _hudOwnedUi != null) return _hudOwnedUi;
+
+            float now = Time.realtimeSinceStartup;
+            if (_hudPrefabTriedAt > 0f && now - _hudPrefabTriedAt < 8f) return null;   // 别每次按键都试
+            _hudPrefabTriedAt = now;
+
+            try
+            {
+                var prefab = FindUiPrefab("ControlUI");
+                if (prefab == null) prefab = FindUiPrefab("ControlPanel");
+                if (prefab == null)
+                {
+                    HudLog("内存里没有 ControlUI prefab");
+                    return null;
+                }
+
+                var im = Naninovel.Engine.GetService<Naninovel.IUIManager>();
+                if (im == null) return null;
+                var mgr = ((Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase)im).TryCast<Naninovel.UIManager>();
+                if (mgr == null)
+                {
+                    HudLog("IUIManager 实际类型不是 UIManager");
+                    return null;
+                }
+
+                var mi = typeof(Naninovel.UIManager).GetMethod("InstantiatePrefab",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (mi == null)
+                {
+                    HudLog("UIManager 上没有 InstantiatePrefab");
+                    return null;
+                }
+
+                object raw = mi.Invoke(mgr, new object[] { prefab, "ControlUI", null });
+                var ui = raw == null ? null : As<Naninovel.UI.IManagedUI>((UnityEngine.Object)raw);
+                if (ui == null) HudLog("InstantiatePrefab 返回空");
+                return ui;
+            }
+            catch (Exception e)
+            {
+                HudLog("实例化 prefab 失败 " + e.Message);
+                return null;
+            }
+        }
+
+        /// <summary>把任何一个 Naninovel UI 设成可见：引擎自带 ManagedUIExtensions.Show 会按具体类型派发。</summary>
+        private static bool SetUiVisible(Naninovel.UI.IManagedUI ui)
+        {
+            try
+            {
+                Naninovel.ManagedUIExtensions.Show(ui);
+                return true;
+            }
+            catch (Exception e)
+            {
+                HudLog("Show 失败 " + e.Message);
+                return false;
+            }
+        }
+
+        /// <summary>HUD 生命周期走 BepInEx 日志（不受「详细日志」开关影响），下次复测一眼能看出卡在哪步。</summary>
+        private static void HudLog(string s)
+        {
+            try { if (Plugin.L != null) Plugin.L.LogInfo("[UiNav] HUD：" + s); } catch { }
+        }
+
+        /// <summary>HUD 显示失败时把现场写进日志：下次玩家复测就能看出卡在哪一步。</summary>
+        private static void DumpHudDiagnostics(Naninovel.IUIManager im)
+        {
+            try
+            {
+                var sb = new System.Text.StringBuilder("诊断：");
+                sb.Append(" HasUI(ControlUI)=").Append(im.HasUI("ControlUI"));
+                var uis = im.GetManagedUIs();
+                sb.Append(" 已实例化 UI 数=").Append(uis == null ? 0 : uis.Count);
+
+                // IReadOnlyCollection 代理没有 GetEnumerator，换个角度看：内存里所有 CustomUI 行为。
+                var behaviours = Resources.FindObjectsOfTypeAll<Naninovel.ScriptableUIBehaviour>();
+                int total = behaviours == null ? 0 : behaviours.Length;
+                int sceneOnes = 0;
+                sb.Append(" 行为总数=").Append(total);
+                if (behaviours != null)
+                {
+                    int shown = 0;
+                    for (int i = 0; i < behaviours.Length; i++)
+                    {
+                        var b = behaviours[i];
+                        if (b == null) continue;
+                        bool inScene = b.gameObject.scene.IsValid();
+                        if (inScene) sceneOnes++;
+                        if (shown < 12 && inScene)   // 只列场景内的（已实例化），最多 12 个
+                        {
+                            sb.Append(" [").Append(b.gameObject.name).Append("]");
+                            shown++;
+                        }
+                    }
+                }
+                sb.Append(" 场景内=").Append(sceneOnes);
+
+                var gos = Resources.FindObjectsOfTypeAll<GameObject>();
+                int hits = 0;
+                if (gos != null)
+                {
+                    for (int i = 0; i < gos.Length && hits < 4; i++)
+                    {
+                        var go = gos[i];
+                        if (go == null) continue;
+                        if (go.name != "ControlUI" && go.name != "ControlPanel") continue;
+                        hits++;
+                        sb.Append(" {").Append(go.name).Append(go.scene.IsValid() ? "·场景" : "·资源")
+                          .Append(go.activeInHierarchy ? "·active" : "·inactive");
+                        var mbs = go.GetComponents<MonoBehaviour>();
+                        if (mbs != null)
+                            foreach (var c in mbs) { if (c != null) sb.Append(" ").Append(c.GetType().Name); }
+                        sb.Append("}");
+                    }
+                }
+                HudLog(sb.ToString());
+            }
+            catch (Exception e) { Plugin.Diag("[UiNav] HUD 诊断失败 " + e.Message); }
         }
 
         private static void Engage(bool hud)
@@ -326,6 +623,13 @@ namespace NoExistenceA11y
             ReleaseSelection();
             SuppressUguiNav(false);
             BlockPageGameInput(false);
+            if (_hudOwned)
+            {
+                try { if (_hudOwnedUi != null) Naninovel.ManagedUIExtensions.Hide(_hudOwnedUi); }
+                catch (Exception e) { HudLog("退出时隐藏失败 " + e.Message); }
+                _hudOwned = false;
+                _hudOwnedUi = null;
+            }
             if (was)
             {
                 _lastExitAt = Time.realtimeSinceStartup;
@@ -392,7 +696,7 @@ namespace NoExistenceA11y
             }
         }
 
-        private static Naninovel.UI.IManagedUI FindManagedUi(Transform t)
+        internal static Naninovel.UI.IManagedUI FindManagedUi(Transform t)
         {
             try
             {
@@ -769,9 +1073,9 @@ namespace NoExistenceA11y
                 string path = PathOf(t);
                 bool hudPath = path.IndexOf("ControlUI", StringComparison.OrdinalIgnoreCase) >= 0;
 
-                // HUD 接管/扫描时反过来：只收 ControlUI，其它「非菜单界面」照旧排除。
-                // （自动接管时 ControlUI 不在此列，见上面注释。）
-                if (_hudMode || _scanHud) return !hudPath;
+                // HUD 平时被排除（不排除的话剧情期一切换就自动接管、回车会抢去点按钮）；
+                // 只有玩家按 Alt+M（_scanHud）或正在操作 HUD（_hudMode）时才放它进来。
+                if (hudPath) return !(_hudMode || _scanHud);
 
                 var cfg = Plugin.CfgUiMenuExcludePaths;
                 if (cfg == null || string.IsNullOrEmpty(cfg.Value)) return false;
@@ -869,7 +1173,9 @@ namespace NoExistenceA11y
             Component before = _announcedItem;
             var beforeList = new List<Component>(Items);
 
-            Scan();
+            bool prevScanHud = _scanHud;
+            if (_hudMode) _scanHud = true;   // HUD 接管中扫描要放 ControlUI 进来
+            try { Scan(); } finally { _scanHud = prevScanHud; }
             if (Groups.Count == 0 || Items.Count == 0)
             {
                 // HUD 那组按钮可能先藏起来了（例如从 HUD 点进设置）：退出 HUD 语义再扫一次，
@@ -2629,9 +2935,14 @@ namespace NoExistenceA11y
             // ---- 延迟的「已激活」补播 ----
             TickPendingActivation();
 
-            // ---- 还没接管：空闲时侦测有没有界面出现 ----
+            // ---- 还没接管：HUD 显示重试窗口 / 空闲时侦测有没有界面出现 ----
             if (!_active)
             {
+                if (_hudRetryUntil > 0f)
+                {
+                    HudRetry();
+                    if (_active) return;
+                }
                 IdleDetect();
                 return;
             }

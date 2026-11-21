@@ -1,5 +1,5 @@
 # =====================================================================
-#  Assemble the release zip for v0.2.1.0
+#  Assemble the release zip for v0.2.1.0 Preview EXP1
 #
 #  发布包 = BepInEx 6.0.0-be.788 官方包
 #         + 打过补丁的 Il2CppInterop.Runtime.dll（上游 PR #277）
@@ -17,7 +17,8 @@ $MOD  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SRC  = Join-Path $MOD 'src\NoExistenceA11y'
 $PKG  = Join-Path $MOD 'package'
 $OUT  = Join-Path $MOD 'dist'
-$REL  = Join-Path $OUT 'NoExistenceA11y-0.2.1.0'
+$REL  = Join-Path $OUT 'NoExistenceA11y-0.2.1.0-exp1'
+$ZIPSUFFIX = '-exp1'   # Preview EXP1 测试包；正式 0.2.1.0 发布时改回空串 ''
 $BE   = Join-Path $MOD '..\probe\bepinex_be788.zip'
 $PAT  = Join-Path $MOD '..\probe\evidence\Il2CppInterop.Runtime.PATCHED.dll'
 $NVDA = 'D:\DSHWorkBase\transparenther_a11y\mod\nvda_dl\x64\nvdaControllerClient.dll'
@@ -144,7 +145,7 @@ if (-not $ok) { exit 1 }
 Write-Host ""
 Write-Host "=== 4. zip ==="
 New-Item -ItemType Directory -Force -Path $OUT | Out-Null
-$zip = Join-Path $OUT ("NoExistenceA11y-" + $ver + ".zip")
+$zip = Join-Path $OUT ("NoExistenceA11y-" + $ver + $ZIPSUFFIX + ".zip")
 
 # Do NOT use Compress-Archive here. On Windows PowerShell 5.1 it delegates to
 # .NET Framework's ZipFile.CreateFromDirectory, which builds entry names with
