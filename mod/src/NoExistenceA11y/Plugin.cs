@@ -26,8 +26,9 @@ namespace NoExistenceA11y
         /// <summary>
         /// 显示用版本标签：与 Version 分开，方便区分同为 0.2.1.0 的迭代测试包。
         /// 只在日志头、文档里出现；BepInPlugin 用的仍必须是纯数字的 Version。
+        /// 2026-11-22 起转正式版：标签不再带 Preview EXPn 后缀。
         /// </summary>
-        public const string VersionLabel = "0.2.1.0 Preview EXP2";
+        public const string VersionLabel = "0.2.1.0";
 
         internal static ManualLogSource L;
 
