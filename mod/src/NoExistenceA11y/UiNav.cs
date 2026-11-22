@@ -270,12 +270,16 @@ namespace NoExistenceA11y
         /// </summary>
         public static void ToggleHud()
         {
+            // 无条件日志：用户反馈「Alt+M 没反应」，需要分清是热键没命中、还是 HUD 没扫到。
+            HudLog("ToggleHud 被调用：active=" + _active + "，hud=" + _hudMode);
             if (_active && _hudMode) { Disengage(true); return; }
+            if (_active) { Disengage(false); }
             HudEnter();
         }
 
         private static void HudEnter()
         {
+            HudLog("HudEnter 开始扫描对话 HUD");
             // 对话 HUD（ControlUI）平时在「非菜单界面」排除名单里 —— 那是为了别自动
             // 抢走回车；手动按了热键就临时放行这一组，只收 ControlUI。
             _scanHud = true;
@@ -284,6 +288,7 @@ namespace NoExistenceA11y
 
             if (Groups.Count > 0 && Items.Count > 0)
             {
+                HudLog("HudEnter 直接扫到 " + Items.Count + " 项，接管");
                 Engage(true);
                 return;
             }
@@ -299,6 +304,7 @@ namespace NoExistenceA11y
                 Speech.Speak("正在打开对话界面按钮。", false);
                 return;
             }
+            HudLog("TryRevealGameHud 失败：HUD 无法显示");
             Speech.Speak("当前没有可以操作的界面按钮。", true);
         }
 
@@ -2883,6 +2889,72 @@ namespace NoExistenceA11y
                 return true;
             }
             catch (Exception e) { Plugin.L.LogError("调整滑条失败: " + e.Message); return false; }
+        }
+
+        // ================= 开发自测（仅当 BepInEx\noexistence_a11y.selftest 存在时启用） =================
+        // 用户机器上没有这个文件，正常游玩不会触发；它只是让「没法用键盘自动化的本机测试」
+        // 也能验证 HUD 显示链路与按钮激活方式。
+
+        /// <summary>把当前接管状态、页面与控件清单压成一行，供自测日志使用。</summary>
+        internal static string DebugInfo()
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                sb.Append("active=").Append(_active).Append(" hud=").Append(_hudMode)
+                  .Append(" page=\"").Append(_pageLabel).Append("\" groups=").Append(Groups.Count)
+                  .Append(" items=").Append(Items.Count);
+                for (int i = 0; i < Items.Count && i < 12; i++)
+                {
+                    Component it = Items[i];
+                    if (it == null) { sb.Append(" | ").Append(i).Append(":<null>"); continue; }
+                    sb.Append(" | ").Append(i).Append(':').Append(Describe(it));
+                }
+                return sb.ToString();
+            }
+            catch (Exception e) { return "DebugInfo 异常: " + e.Message; }
+        }
+
+        internal static string DebugPageKey()
+        {
+            try { return PageKey(); } catch { return ""; }
+        }
+
+        internal static void SelfTestToggleHud()
+        {
+            try { ToggleHud(); } catch (Exception e) { Plugin.L.LogError("自测 ToggleHud 异常: " + e.Message); }
+        }
+
+        internal static void SelfTestActivate(int index)
+        {
+            try
+            {
+                if (index < 0 || index >= Items.Count) { Plugin.L.LogInfo("[selftest] Activate 越界 index=" + index + " items=" + Items.Count); return; }
+                Activate(Items[index]);
+            }
+            catch (Exception e) { Plugin.L.LogError("自测 Activate 异常: " + e.Message); }
+        }
+
+        /// <summary>公约「二级激活」：派发一次真实 pointerClick，触发控件自己的 IPointerClickHandler。</summary>
+        internal static void SelfTestPointerClick(int index)
+        {
+            try
+            {
+                if (index < 0 || index >= Items.Count) return;
+                Component it = Items[index];
+                if (it == null) return;
+                EventSystem es = EventSystem.current;
+                if (es == null) { Plugin.L.LogInfo("[selftest] pointerClick 跳过：EventSystem 为空"); return; }
+                var data = new PointerEventData(es);
+                ExecuteEvents.Execute(it.gameObject, data, ExecuteEvents.pointerClickHandler);
+                Plugin.L.LogInfo("[selftest] pointerClick 已派发 -> " + PathOf(it.transform));
+            }
+            catch (Exception e) { Plugin.L.LogError("自测 pointerClick 异常: " + e.Message); }
+        }
+
+        internal static void SelfTestDisengage()
+        {
+            try { if (_active) Disengage(false); } catch { }
         }
 
         // ================= 每帧 =================

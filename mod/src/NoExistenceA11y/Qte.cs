@@ -55,6 +55,16 @@ namespace NoExistenceA11y
     ///   · 所有环境播报 interrupt=false（不打断剧情朗读）；只有 F3 的显式操作打断。
     ///   · 播报不写重读缓冲（0.2.1 用户要求：缓冲只放剧情正文与选项）。
     ///
+    /// === 手动键盘通道（0.2.1 用户反馈后新增）===
+    ///   自动通过关闭时，QTE 可以用键盘手动打（盲人靠听节奏 + 方向键选目标）：
+    ///     · ↑/↓ 换目标并念「第 i 个，共 N 个」；Home/End 跳到首/末
+    ///     · 回车 / 空格 / 小键盘回车 = 拍当前选中的按钮
+    ///       只有玩家按键才会 Invoke，补丁绝不代替玩家点
+    ///     · 节奏提示：每个按钮只在「alpha 首次从下往上跨过 0.7」或
+    ///       「出生满 0.85×兜底延迟」时念一声极短的「按」，每个按钮最多一次
+    ///     · 第一个按钮出现时念一句手动模式操作说明
+    ///     · 这些提示/说明都是 interrupt=false（不打断剧情朗读），也不写重读缓冲
+    ///
     /// === 安全性 ===
     ///   错误选项没有扣分，所以「点一遍」在结果上严格优于「什么都不点」。
     ///   采集范围严格限制在 QTEUI 子树内，不会误碰别处的按钮。
@@ -71,11 +81,16 @@ namespace NoExistenceA11y
         private const string MsgAutoEnabled = "自动通过已开启。";
         private const string MsgAutoDisabled = "自动通过已关闭。";
         private const string MsgEnd = "反应环节结束。";
+        private const string MsgManualStart = "反应环节，手动模式：按回车拍按钮，上下键换目标，F3 可自动通过。";
+        private const string MsgPress = "按";
+        private const string MsgManualNoButton = "还没有出现按钮。";
 
         private const float HintFirstDelay = 20f;   // 进场后多久开始提醒
         private const float HintInterval = 20f;     // 提醒间隔
         private const int HintMax = 3;              // 每局最多提醒次数
         private const float ReopenWindow = 4f;      // 结束多久内又出现算「重开」
+        private const float ManualPromptAlpha = 0.7f;     // alpha 跨过它算「凝实到位」
+        private const float ManualPromptAgeRatio = 0.85f; // 出生到 0.85×兜底延迟就提示
 
         private static Naninovel.UI.QTEUI _ui;
         private static int _rescanAt;
@@ -89,6 +104,11 @@ namespace NoExistenceA11y
         private static int _hintCount;
         private static readonly List<string> _lastTexts = new List<string>();
         private static bool _typeBroken;
+
+        // ---- 手动键盘模式（自动通过关闭时）----
+        private static int _manualIndex;
+        private static bool _manualIntroGiven;
+        private static readonly Dictionary<int, ManualBtn> _manualState = new Dictionary<int, ManualBtn>();
 
         /// <summary>运行时开关，初值取自配置，F3 可切；切换不写回配置。</summary>
         internal static bool AutoOn;
@@ -106,6 +126,15 @@ namespace NoExistenceA11y
 
         private static readonly Dictionary<int, Btn> _state = new Dictionary<int, Btn>();
         private static readonly HashSet<int> _activeLast = new HashSet<int>();
+
+        /// <summary>手动模式下每个按钮的一次性状态（按实例 ID + 活跃生命周期记）。</summary>
+        private sealed class ManualBtn
+        {
+            public float Born;
+            public bool SeenBelow;   // 见过 alpha 低于阈值（只有从下往上跨过才算「到位」）
+            public bool Prompted;    // 时机提示是否已念过
+            public bool Clicked;     // 玩家已拍过，等它消失/复用
+        }
 
         // ================= 面板定位 =================
 
@@ -217,9 +246,10 @@ namespace NoExistenceA11y
             if (!_live) BeginSession();
             else if (!AutoOn && !hotkey) MaybeHint();
 
-            // 4) 自动关闭时只提醒 + 抓文本，绝不代点；自动打开时才 Tick
+            // 4) 自动关闭时走手动键盘通道（只提醒 + 抓文本，绝不代点）；自动打开时才 Tick
             if (!AutoOn)
             {
+                ManualTick(ui);
                 DumpScore(ui);
                 return;
             }
@@ -239,6 +269,9 @@ namespace NoExistenceA11y
             _state.Clear();
             _activeLast.Clear();
             _lastTexts.Clear();
+            _manualIndex = 0;
+            _manualIntroGiven = false;
+            _manualState.Clear();
             _lastDump = -1000f;      // 下一帧立刻抓一次面板文字
 
             bool reopen = _startedAt - _endedAt <= ReopenWindow;
@@ -274,6 +307,9 @@ namespace NoExistenceA11y
             _clicks = 0;
             _state.Clear();
             _activeLast.Clear();
+            _manualIndex = 0;
+            _manualIntroGiven = false;
+            _manualState.Clear();
         }
 
         /// <summary>自动关闭时每隔一段时间提醒一次（最多 3 次）。</summary>
@@ -333,6 +369,190 @@ namespace NoExistenceA11y
             for (int i = 0; i < s.Length; i++)
                 if (!char.IsWhiteSpace(s[i])) sb.Append(s[i]);
             return sb.ToString();
+        }
+
+        // ================= 手动键盘通道 =================
+
+        private static bool EnterPressed()
+        {
+            try
+            {
+                return Input.GetKeyDown(KeyCode.Return)
+                    || Input.GetKeyDown(KeyCode.KeypadEnter)
+                    || Input.GetKeyDown(KeyCode.Space);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 自动通过关闭时的键盘手动通道：
+        /// 收集本帧可拍按钮 → 方向键选目标 → 玩家按回车才 Invoke（绝不代点）。
+        /// 另给每个按钮一次时机提示（短促「按」），弥补读不到渐隐动画的缺陷。
+        /// </summary>
+        private static void ManualTick(Naninovel.UI.QTEUI ui)
+        {
+            float now = Time.realtimeSinceStartup;
+            var buttons = Collect(ui);
+
+            // 1) 收集本帧可用按钮：活跃、可交互、还没被玩家拍过
+            var usable = new List<Button>();
+            var activeNow = new HashSet<int>();
+            for (int i = 0; i < buttons.Count; i++)
+            {
+                Button b = buttons[i];
+                if (b == null || b.gameObject == null) continue;
+                if (!b.gameObject.activeInHierarchy || !b.interactable) continue;
+
+                int id = b.GetInstanceID();
+                activeNow.Add(id);
+
+                ManualBtn st;
+                if (!_manualState.TryGetValue(id, out st) || !_activeLast.Contains(id))
+                {
+                    // 新的一次生命（按钮是池化的，实例 ID 会复用，按「不活跃 -> 活跃」判定）
+                    st = new ManualBtn { Born = now };
+                    _manualState[id] = st;
+                }
+                if (st.Clicked) continue;      // 拍过的按钮等它消失/复用
+                usable.Add(b);
+            }
+
+            // 清理已消失按钮的状态，避免按钮池复用后越积越多
+            if (_manualState.Count > 0)
+            {
+                var dead = new List<int>();
+                foreach (var kv in _manualState)
+                    if (!activeNow.Contains(kv.Key)) dead.Add(kv.Key);
+                for (int i = 0; i < dead.Count; i++) _manualState.Remove(dead[i]);
+            }
+            _activeLast.Clear();
+            foreach (var id in activeNow) _activeLast.Add(id);
+
+            // 2) 先处理玩家按键（换目标 / 拍按钮）
+            HandleManualKeys(usable, now);
+
+            // 3) 本局第一颗按钮出现时念一句操作说明
+            if (!_manualIntroGiven && usable.Count > 0)
+            {
+                _manualIntroGiven = true;
+                Plugin.Diag("QTE 手动模式：按钮出现 " + usable.Count + " 个");
+                Speech.Speak(MsgManualStart, false);   // 不打断剧情朗读；不写重读缓冲
+            }
+
+            // 4) 每个按钮只提示一次时机：alpha 首次跨过阈值，或年龄接近兜底延迟
+            float delay = FallbackDelay();
+            float ageDue = delay * ManualPromptAgeRatio;
+            bool promptedThisFrame = false;
+            for (int i = 0; i < usable.Count; i++)
+            {
+                Button b = usable[i];
+                int id = b.GetInstanceID();
+                ManualBtn st;
+                if (!_manualState.TryGetValue(id, out st)) continue;
+                if (st.Prompted || st.Clicked) continue;
+
+                float a = AlphaOf(b);
+                if (a < ManualPromptAlpha) st.SeenBelow = true;
+                float age = now - st.Born;
+                bool alphaDue = st.SeenBelow && a >= ManualPromptAlpha;
+                bool tooOld = age >= ageDue;
+                if (!alphaDue && !tooOld) continue;
+
+                st.Prompted = true;
+                if (!promptedThisFrame)
+                {
+                    promptedThisFrame = true;          // 同一帧多个按钮同时到位只念一声
+                    Speech.Speak(MsgPress, true);      // 极短节拍提示，允许打断
+                    Plugin.Diag(string.Format(
+                        "QTE 手动提示 age={0:0.00}s alpha={1:0.00}（{2}）",
+                        age, a, alphaDue ? "alpha 到位" : "接近兜底"));
+                }
+            }
+        }
+
+        /// <summary>方向键换目标并播报；回车/空格拍当前选中的按钮。</summary>
+        private static void HandleManualKeys(List<Button> usable, float now)
+        {
+            int n = usable.Count;
+            if (n == 0)
+            {
+                if (EnterPressed()) Speech.Speak(MsgManualNoButton, true);
+                return;
+            }
+
+            if (_manualIndex < 0) _manualIndex = 0;
+            else if (_manualIndex >= n) _manualIndex = n - 1;
+
+            bool moved = false;
+            try
+            {
+                if (Input.GetKeyDown(KeyCode.UpArrow))
+                {
+                    _manualIndex = (_manualIndex - 1 + n) % n;
+                    moved = true;
+                }
+                else if (Input.GetKeyDown(KeyCode.DownArrow))
+                {
+                    _manualIndex = (_manualIndex + 1) % n;
+                    moved = true;
+                }
+                else if (Input.GetKeyDown(KeyCode.Home))
+                {
+                    _manualIndex = 0;
+                    moved = true;
+                }
+                else if (Input.GetKeyDown(KeyCode.End))
+                {
+                    _manualIndex = n - 1;
+                    moved = true;
+                }
+            }
+            catch { }
+
+            if (moved)
+            {
+                Plugin.Diag("QTE 手动选中 " + (_manualIndex + 1) + "/" + n);
+                Speech.Speak(string.Format("第 {0} 个，共 {1} 个", _manualIndex + 1, n), true);
+            }
+
+            if (!EnterPressed()) return;
+
+            int idx = Mathf.Clamp(_manualIndex, 0, n - 1);
+            Button b = usable[idx];
+            if (b == null) return;
+
+            int id = b.GetInstanceID();
+            ManualBtn st;
+            if (!_manualState.TryGetValue(id, out st)) return;
+            if (st.Clicked) return;
+
+            float a = AlphaOf(b);
+            float age = now - st.Born;
+            try
+            {
+                b.onClick.Invoke();                // 走游戏自己的点击函数，只由玩家按键触发
+                st.Clicked = true;
+                _clicks++;
+                Plugin.Diag(string.Format(
+                    "QTE 手动点击 #{0} 按钮={1} age={2:0.00}s alpha={3:0.00}",
+                    _clicks, ButtonName(b, idx), age, a));
+            }
+            catch (Exception e) { Plugin.Diag("QTE 手动点击失败: " + e.Message); }
+
+            // 立刻把点过的这个从本帧列表里剔除，避免同一帧/下一帧重复点
+            usable.RemoveAt(idx);
+            _manualIndex = usable.Count > 0 ? Mathf.Clamp(idx, 0, usable.Count - 1) : 0;
+        }
+
+        private static string ButtonName(Button b, int index)
+        {
+            try
+            {
+                if (b != null && b.gameObject != null && !string.IsNullOrEmpty(b.gameObject.name))
+                    return b.gameObject.name;
+            }
+            catch { }
+            return "第 " + (index + 1) + " 个";
         }
 
         private static void Tick(Naninovel.UI.QTEUI ui)

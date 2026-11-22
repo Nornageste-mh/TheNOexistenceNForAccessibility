@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Text;
 using BepInEx;
@@ -26,7 +27,7 @@ namespace NoExistenceA11y
         /// 显示用版本标签：与 Version 分开，方便区分同为 0.2.1.0 的迭代测试包。
         /// 只在日志头、文档里出现；BepInPlugin 用的仍必须是纯数字的 Version。
         /// </summary>
-        public const string VersionLabel = "0.2.1.0 Preview EXP1";
+        public const string VersionLabel = "0.2.1.0 Preview EXP2";
 
         internal static ManualLogSource L;
 
@@ -369,12 +370,41 @@ namespace NoExistenceA11y
             }
             catch { }
 
+            // 诊断（EXP2）：用户机上一次 Alt+M 日志都没有，先证明热键配置解析是否正常。
+            try
+            {
+                Hotkey.Spec hs;
+                string hwhy;
+                string hspec = CfgHudHotkey != null ? CfgHudHotkey.Value : "";
+                bool hok = Hotkey.Parse(hspec, out hs, out hwhy);
+                A11yBehaviour.BootLog("HUD 热键配置=\"" + hspec + "\"，解析=" +
+                    (hok ? ("OK key=" + hs.Key + " alt=" + hs.Alt + " ctrl=" + hs.Ctrl + " shift=" + hs.Shift)
+                         : ("失败：" + hwhy)));
+            }
+            catch (Exception e) { A11yBehaviour.BootLog("HUD 热键解析异常: " + e.Message); }
+
             try
             {
                 AddComponent<A11yBehaviour>();
                 L.LogInfo("[a11y] behaviour added");
             }
             catch (Exception e) { L.LogError("[a11y] AddComponent failed: " + e); }
+
+            // 开发自测：只有本机存在哨兵文件时才启用（玩家机器不会有）。
+            // 本机无法用 SendInput 把键盘事件送进 Unity，用这条链路代替按键验证 HUD 显示与按钮激活。
+            try
+            {
+                string sentinel = Path.Combine(Paths.BepInExRootPath, "noexistence_a11y.selftest");
+                if (File.Exists(sentinel))
+                {
+                    A11yBehaviour.SelfTestArmed = true;
+                    A11yBehaviour.BootLog("发现自测哨兵文件，进入游戏后自动跑一轮 HUD 自测：" + sentinel);
+                    // AddComponent 会同步执行 Awake，而哨兵是在 AddComponent 之后才检查的，
+                    // 所以这里必须直接给已经建好的实例排程（否则 Awake 里看到 SelfTestArmed 还是 false）。
+                    if (A11yBehaviour.Instance != null) A11yBehaviour.Instance.ArmSelfTest();
+                }
+            }
+            catch (Exception e) { A11yBehaviour.BootLog("自测哨兵检查异常: " + e.Message); }
 
             try
             {
@@ -821,6 +851,9 @@ namespace NoExistenceA11y
         /// <summary>给 UiNav 起协程用（引擎异步 API 的 ToCoroutine 需要 MonoBehaviour）。</summary>
         public static A11yBehaviour Instance;
 
+        /// <summary>开发自测开关：由 BepInEx\noexistence_a11y.selftest 哨兵文件置位。</summary>
+        internal static bool SelfTestArmed;
+
         private bool _speechInited;
         private bool _subscribed;
         private int _ticks;
@@ -846,6 +879,91 @@ namespace NoExistenceA11y
             Instance = this;
             BootLog("Awake，enabled=" + enabled + "，activeInHierarchy=" + gameObject.activeInHierarchy
                 + "，activeSelf=" + gameObject.activeSelf);
+            if (SelfTestArmed)
+            {
+                SelfTestArmed = false;
+                _selfTestActive = true;
+                _selfTestNext = Time.realtimeSinceStartup + 10f;
+                BootLog("[selftest] 自测已排程（10 秒后开始）");
+            }
+        }
+
+        private bool _selfTestActive;
+        private int _selfTestStage;
+        private float _selfTestNext;
+        private string _selfTestKey0 = "";
+
+        /// <summary>由 Plugin.Load 在发现哨兵文件后调用（Awake 早于哨兵检查，不能只靠 Awake 置位）。</summary>
+        internal void ArmSelfTest()
+        {
+            _selfTestActive = true;
+            _selfTestNext = Time.realtimeSinceStartup + 10f;
+            BootLog("[selftest] 自测已排程（10 秒后开始）");
+        }
+
+        /// <summary>
+        /// 开发自测（Update 驱动的定时状态机，不用协程：IL2CPP 下 StartCoroutine 只收
+        /// Il2CppSystem.Collections.IEnumerator，托管 IEnumerator 传不进去）。
+        /// 本机无法用 SendInput 把按键送进 Unity，改为在游戏内直接跑：
+        /// 打开对话 HUD → 打印页面清单 → 激活第 0 项（先 onClick，再 pointerClick）。
+        /// 只在哨兵文件存在时启动。
+        /// </summary>
+        private void SelfTestTick()
+        {
+            if (!_selfTestActive) return;
+            float now = Time.realtimeSinceStartup;
+            if (now < _selfTestNext) return;
+            try
+            {
+                switch (_selfTestStage)
+                {
+                    case 0:
+                        BootLog("[selftest] 初始：" + UiNav.DebugInfo());
+                        _selfTestKey0 = UiNav.DebugPageKey();
+                        BootLog("[selftest] 触发 HUD 切换（等价于 Alt+M 命中后的动作）");
+                        UiNav.SelfTestToggleHud();
+                        _selfTestStage = 1;
+                        _selfTestNext = now + 2f;
+                        break;
+                    case 1:
+                        BootLog("[selftest] 进入后：" + UiNav.DebugInfo());
+                        BootLog("[selftest] 激活第 0 项（走现有 onClick 路径）");
+                        UiNav.SelfTestActivate(0);
+                        _selfTestStage = 2;
+                        _selfTestNext = now + 2f;
+                        break;
+                    case 2:
+                        {
+                            string k1 = UiNav.DebugPageKey();
+                            BootLog("[selftest] onClick 后：" + UiNav.DebugInfo() + "（页键=" + k1 + "）");
+                            if (k1 == _selfTestKey0)
+                            {
+                                BootLog("[selftest] onClick 未改变页面，改试 pointerClick 派发");
+                                UiNav.SelfTestPointerClick(0);
+                                _selfTestStage = 3;
+                            }
+                            else
+                            {
+                                BootLog("[selftest] onClick 生效，页面已切换");
+                                _selfTestStage = 4;
+                            }
+                            _selfTestNext = now + 2f;
+                        }
+                        break;
+                    case 3:
+                        BootLog("[selftest] pointerClick 后：" + UiNav.DebugInfo() + "（页键=" + UiNav.DebugPageKey() + "）");
+                        UiNav.SelfTestDisengage();
+                        _selfTestStage = 4;
+                        _selfTestNext = now + 1f;
+                        break;
+                    case 4:
+                        BootLog("[selftest] 关闭后：" + UiNav.DebugInfo());
+                        BootLog("[selftest] 完成");
+                        _selfTestActive = false;
+                        break;
+                }
+            }
+            catch (Exception e) { BootLog("[selftest] 异常: " + e.Message); _selfTestActive = false; }
         }
 
         public void OnEnable()
@@ -858,6 +976,10 @@ namespace NoExistenceA11y
             _ticks++;
             if (_ticks == 1) BootLog("Update 第一帧");
             else if (_ticks % 600 == 0) BootLog("Update 存活 tick=" + _ticks);
+            if (_selfTestActive)
+            {
+                try { SelfTestTick(); } catch (Exception e) { BootLog("[selftest] 异常: " + e.Message); }
+            }
 
             // 界面操作：菜单一出现就自动接管（uGUI 提交通路只在接管期间关，退出即还原）。
             if (Plugin.CfgUiNav == null || Plugin.CfgUiNav.Value)
@@ -865,12 +987,32 @@ namespace NoExistenceA11y
                 try { UiNav.Update(); } catch (Exception e) { Plugin.Diag("UiNav: " + e.Message); }
                 try
                 {
+                    // 诊断（EXP2）：证明游戏窗口确实收到了 M / Alt 的原始输入，
+                    // 与「热键解析/条件判断」哪一环断了区分开。
+                    try
+                    {
+                        if (Input.GetKeyDown(KeyCode.M))
+                            BootLog("原始 M 按下：LAlt=" + Input.GetKey(KeyCode.LeftAlt)
+                                + " RAlt=" + Input.GetKey(KeyCode.RightAlt)
+                                + " active=" + UiNav.Active + " hud=" + UiNav.HudMode
+                                + " inputField=" + UiNav.InputFieldActive);
+                        if (Input.GetKeyDown(KeyCode.LeftAlt) || Input.GetKeyDown(KeyCode.RightAlt))
+                            BootLog("原始 Alt 按下：LAlt=" + Input.GetKey(KeyCode.LeftAlt)
+                                + " RAlt=" + Input.GetKey(KeyCode.RightAlt));
+                    }
+                    catch { }
+
                     // 剧情 HUD 里的「设置」「回想」游戏只给了鼠标入口，单独给一个显式热键。
-                    // 只在「没接管」或「正在操作 HUD」时响应，避免和菜单里的方向键抢。
-                    if ((!UiNav.Active || UiNav.HudMode) && !UiNav.InputFieldActive
+                    // 2026-11-22 实机反馈 Alt+M 没反应：原来只在「未接管或正在操作 HUD」时响应，
+                    // 若 UiNav 恰好自动接管了某个页面就会静默吞掉热键 —— 改为始终响应，
+                    // 由 ToggleHud 自己处理「从菜单页先交还，再开 HUD」。
+                    if (!UiNav.InputFieldActive
                         && Plugin.CfgHudHotkey != null
                         && Hotkey.Down(Plugin.CfgHudHotkey.Value))
+                    {
+                        BootLog("HUD 热键命中：" + Plugin.CfgHudHotkey.Value + "（active=" + UiNav.Active + "，hud=" + UiNav.HudMode + "）");
                         UiNav.ToggleHud();
+                    }
                 }
                 catch (Exception e) { Plugin.Diag("HudHotkey: " + e.Message); }
             }
