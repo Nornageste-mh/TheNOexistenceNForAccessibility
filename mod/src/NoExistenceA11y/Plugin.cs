@@ -60,6 +60,8 @@ namespace NoExistenceA11y
         internal static ConfigEntry<int> CfgJumpLine;
         internal static ConfigEntry<bool> CfgDumpScript;
         internal static ConfigEntry<bool> CfgAutoJump;
+        internal static ConfigEntry<bool> CfgTestMode;
+        internal static ConfigEntry<bool> CfgDumpAllScripts;
 
         // ---- 选项框 ----
         internal static ConfigEntry<bool> CfgReadChoices;
@@ -268,16 +270,32 @@ namespace NoExistenceA11y
                 "只写日志、不改游戏状态，默认关闭。");
             CfgJumpLine = Config.Bind("诊断", "跳转位置", 0,
                 "★ 从剧本的**第几行**开始播（0 = 从开头，默认）。\n" +
+                "**负数 = 倒数第 N 行**（-15 = 从末尾往前数第 15 行开始播），\n" +
+                "适合直接跳到章节结尾看特殊控件；实际行号 = 总行数 + 该值。\n" +
                 "\n" +
                 "为什么默认是 0：从开头播时，脚本自己的 @char / @modifyCharacter\n" +
                 "立绘装配命令都会执行；从中间起播会**跳过**这些命令，\n" +
                 "实测角色立绘直接错乱（当初的玩家原话是「拼图错误」）。\n" +
                 "\n" +
-                "所以只在排查某一段剧情（例如某章结尾的字幕）时临时调大，\n" +
-                "用完记得改回 0。配合「跳转热键」使用，两个都要填。");
+                "所以只在排查某一段剧情（例如某章结尾的字幕）时临时调大/调负，\n" +
+                "用完记得改回 0。配合「跳转热键」使用。");
             CfgJumpHotkey = Config.Bind("诊断", "跳转热键", "",
                 "触发上面那个跳转的按键。填 Unity 的 KeyCode 名，例如 F4 / F5 / BackQuote。\n" +
                 "留空可停用。");
+            CfgTestMode = Config.Bind("诊断", "测试模式（开发者后门）", false,
+                "★ 测试者用。等价于环境变量 NOEXISTENCE_A11Y_TEST=1：\n" +
+                "引擎就绪后自动点标题 START，并自动执行一次「跳转脚本 / 跳转位置」。\n" +
+                "自动播放由「自动推进剧情」单独控制（测试特殊控件时建议关掉，免得冲过头）。\n" +
+                "配合「跳转位置 = 负数（倒数第 N 行）」可以一键到达章节结尾的特殊控件处。\n" +
+                "正式游玩保持关闭。");
+
+
+            CfgDumpAllScripts = Config.Bind("诊断", "转储全部剧本行表", false,
+                "测试者用：引擎就绪时把内存里所有剧本的完整行表写进 noexistence_a11y.log，\n"
+                + "方便查某个特殊控件/QTE/选项出现在哪一章、第几行，再配合「跳转脚本/跳转位置」直达。\n"
+                + "行表很长，正式游玩保持关闭。");
+            // 配置里的测试模式等价于环境变量 NOEXISTENCE_A11Y_TEST=1：给测试者用。
+            if (!TestMode && CfgTestMode != null && CfgTestMode.Value) TestMode = true;
 
             CfgReadChoices = Config.Bind("选项框", "朗读选项", true,
                 "主角的全部台词都在选项框里（全剧 ≥625 条），所以这块不是可选项。\n" +
@@ -1080,16 +1098,25 @@ namespace NoExistenceA11y
             if (_subscribed && !_autoJumpTried && _ticks - _subscribedAt > 700)
             {
                 _autoJumpTried = true;
-                if (Plugin.CfgAutoJump != null && Plugin.CfgAutoJump.Value)
+                if (Plugin.TestMode || (Plugin.CfgAutoJump != null && Plugin.CfgAutoJump.Value))
                 {
                     try { Diag.PerformJump(); }
                     catch (Exception e) { Plugin.Diag("自动跳转失败: " + e.Message); }
                 }
             }
 
+            // 测试者用：一次性把全部剧本行表写进诊断日志（找特殊控件/QTE/选项在第几行）
+            if (_subscribed && !_dumpAllScriptsTried && _ticks - _subscribedAt > 350
+                && Plugin.CfgDumpAllScripts != null && Plugin.CfgDumpAllScripts.Value)
+            {
+                _dumpAllScriptsTried = true;
+                try { Diag.DumpAllScripts(); }
+                catch (Exception e) { Plugin.Diag("全部剧本行表转储失败: " + e.Message); }
+            }
+
             // 测试用：让剧情自己走，不依赖模拟点击（模拟点击会被 Windows 的前台窗口锁拦住）
             if (_subscribed && !_autoPlayOn && _ticks - _subscribedAt > 400
-                && (Plugin.TestMode || (Plugin.CfgAutoPlay != null && Plugin.CfgAutoPlay.Value)))
+                && (Plugin.CfgAutoPlay != null && Plugin.CfgAutoPlay.Value))
             {
                 _autoPlayOn = true;
                 try
@@ -1108,6 +1135,7 @@ namespace NoExistenceA11y
 
         private bool _autoPlayOn;
         private bool _autoJumpTried;
+        private bool _dumpAllScriptsTried;
 
         private int _subscribedAt;
         private bool _autoStartTried;
@@ -1157,3 +1185,8 @@ namespace NoExistenceA11y
             => Plugin.OnReveal(__instance, value);
     }
 }
+
+
+
+
+

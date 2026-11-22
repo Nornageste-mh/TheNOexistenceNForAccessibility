@@ -36,9 +36,40 @@ namespace NoExistenceA11y
         /// 另外两个能省事的接口：Script.GetLineIndexForLabel(标签) 与
         /// Script.GetCommentForLine(行号)（后者给的是这一行的原文）。
         /// </summary>
-        private static void DumpLines(Naninovel.Script s)
+        /// <summary>
+        /// 一次把内存里所有 Script 的行表都写进诊断日志（测试者用：
+        /// 想找特殊控件/QTE/选项在哪一章哪一行，用它一把梭）。
+        /// </summary>
+        internal static void DumpAllScripts()
         {
-            if (Plugin.CfgDumpScript == null || !Plugin.CfgDumpScript.Value) return;
+            try
+            {
+                var all = Resources.FindObjectsOfTypeAll<Naninovel.Script>();
+                int n = all == null ? 0 : all.Length;
+                Plugin.Diag("全部剧本行表：共 " + n + " 个剧本");
+                if (all == null) return;
+
+                for (int i = 0; i < all.Length; i++)
+                {
+                    var s = all[i];
+                    if (s == null) continue;
+                    string name = "";
+                    try { name = s.Name; } catch { }
+                    Plugin.Diag("==== 剧本 " + name + "（" + (i + 1) + "/" + n + "）====");
+                    try { DumpLines(s, true); }
+                    catch (Exception e) { Plugin.Diag("剧本 " + name + " 转储失败: " + e.GetType().Name); }
+                }
+                Plugin.Diag("全部剧本行表转储结束");
+            }
+            catch (Exception e)
+            {
+                Plugin.Diag("全部剧本行表转储失败: " + e.GetType().Name + ": " + e.Message);
+            }
+        }
+
+        private static void DumpLines(Naninovel.Script s, bool force = false)
+        {
+            if (!force && (Plugin.CfgDumpScript == null || !Plugin.CfgDumpScript.Value)) return;
             if (s == null) return;
 
             try
@@ -188,7 +219,22 @@ namespace NoExistenceA11y
                 }
                 if (target == null)
                 {
-                    Plugin.Diag("跳转失败：找不到剧本 " + want + "（内存里有 " + (all == null ? 0 : all.Length) + " 个 Script）");
+                    var sb = new System.Text.StringBuilder();
+                    if (all != null)
+                    {
+                        foreach (var s in all)
+                        {
+                            if (s == null) continue;
+                            try
+                            {
+                                int n = -1;
+                                try { var la = s.lines; if (la != null) n = la.Length; } catch { }
+                                sb.Append(" ").Append(s.name).Append("(").Append(n).Append("行)");
+                            }
+                            catch { }
+                        }
+                    }
+                    Plugin.Diag("跳转失败：找不到剧本 " + want + "（内存里有 " + (all == null ? 0 : all.Length) + " 个 Script：" + sb + "）");
                     Speech.Speak("找不到剧本 " + want + "。", true);
                     return;
                 }
@@ -198,14 +244,36 @@ namespace NoExistenceA11y
 
                 // 起播行号：默认 0（从开头）。>0 会跳过 @char / @modifyCharacter 的
                 // 立绘装配命令，立绘可能错乱 —— 只在排查特定段落时用，配置里写了警告。
-                int line = 0;
-                try { if (Plugin.CfgJumpLine != null) line = Mathf.Max(0, Plugin.CfgJumpLine.Value); }
-                catch { line = 0; }
+                // 负数 = 倒数第 N 行（2026-11-22 加，方便直接跳到章节结尾的特殊控件）。
+                int cfgLine = 0;
+                try { if (Plugin.CfgJumpLine != null) cfgLine = Plugin.CfgJumpLine.Value; } catch { cfgLine = 0; }
+
+                int total = -1;
+                try { var arr = target.lines; if (arr != null) total = arr.Length; } catch { total = -1; }
+
+                int line;
+                if (cfgLine < 0)
+                {
+                    if (total <= 0)
+                    {
+                        Plugin.Diag("跳转失败：拿不到剧本 " + want + " 的总行数，无法按倒数解析 " + cfgLine);
+                        Speech.Speak("拿不到剧本总行数，跳转失败。", true);
+                        return;
+                    }
+                    line = Mathf.Max(0, total + cfgLine);
+                }
+                else
+                {
+                    line = Mathf.Max(0, cfgLine);
+                }
 
                 DumpLines(target);
 
-                Plugin.Diag("跳转到剧本 " + want + "（第 " + line + " 行起）");
-                Speech.Speak(line > 0 ? ("跳转到 " + want + " 第 " + line + " 行。") : ("跳转到 " + want + "。"), true);
+                string where = cfgLine < 0
+                    ? ("倒数第 " + (-cfgLine) + " 行（第 " + line + " 行，共 " + total + " 行）")
+                    : ("第 " + line + " 行");
+                Plugin.Diag("跳转到剧本 " + want + "（" + where + "）");
+                Speech.Speak("跳转到 " + want + "，" + where + "。", true);
                 if (line > 0)
                     Plugin.L.LogWarning("[a11y] 跳转位置 = " + line
                         + "：跳过立绘装配命令，立绘可能错乱（诊断用，别在正常游玩时用）");
@@ -224,3 +292,4 @@ namespace NoExistenceA11y
         }
     }
 }
+
