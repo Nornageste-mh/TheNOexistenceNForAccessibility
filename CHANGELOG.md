@@ -79,6 +79,16 @@
 - **设置「你 / 我」按钮**：反汇编确认游戏按结局状态调用 `set_enabled(false)`
   （例如 `end=1`、`G_END3` 未继续等状态），禁用时扫描不到属正常，鼠标也点不动；
   **补丁不处理该游戏状态**，启用时可正常导航（标签「设置视图切换」）。
+- **Steam 会话 Doorstop 污染导致补丁不加载（2026-11-22 实机修复）**：用户反馈
+  「从 Steam 启动没反应」。根因是 Steam 会话环境继承了 `DOORSTOP_DISABLE=TRUE`
+  （别的 Doorstop 模组的注入链把它带进了 Steam 会话），而 `doorstop_config.ini` 的
+  `ignore_disable_switch` 为 `false`，Doorstop 因此跳过注入，BepInEx 与补丁都没加载
+  —— 部署位置本身是对的。修复：游戏目录与发布包 zip 里的 `doorstop_config.ini`
+  改为 `ignore_disable_switch = true`，`deploy.ps1` / `release.ps1` 自动写入该开关；
+  另加 `[boot]` 无条件诊断行（`A11yBehaviour.BootLog()` 直接写
+  `BepInEx\noexistence_a11y.log`，不经过 BepInEx 日志管道、不受「详细日志」开关影响），
+  用来区分「补丁没加载」和「加载了但没跑」。**已实机验证：从 Steam 启动后 BepInEx
+  正常注入，日志有 `[boot]` 行与 speech backend = NVDA。**
 - **文档修正**：上一版把「剧情期键盘」写得过绝对 —— 菜单 / 面板类界面仍然自动接管；
   剧情期原生 HUD 入口只有鼠标，键盘走 `Alt+M`（实验性）。
 - **未实测清单**：T9 剧情中 `Alt+M` 是否出现按钮页、T10 选项上下键 + 回车、
