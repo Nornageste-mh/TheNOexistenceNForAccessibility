@@ -1,4 +1,4 @@
-﻿# =====================================================================
+# =====================================================================
 #  Assemble the release zip for v0.2.1.0 Preview EXP1
 #
 #  发布包 = BepInEx 6.0.0-be.788 官方包
@@ -43,6 +43,26 @@ Expand-Archive -Path $BE -DestinationPath $REL -Force
 Write-Host "    overlaying patched interop ..."
 if (-not (Test-Path $PAT)) { Write-Host "    !! patched interop not found" -ForegroundColor Red; exit 1 }
 Copy-Item $PAT (Join-Path $REL 'BepInEx\core\Il2CppInterop.Runtime.dll') -Force
+
+Write-Host "    patching doorstop_config.ini (immune to polluted Steam session) ..."
+$iniL = Join-Path $REL 'doorstop_config.ini'
+if (Test-Path $iniL) {
+  $txtL = Get-Content -LiteralPath $iniL -Raw
+  if ($txtL -match '(?m)^\s*ignore_disable_switch\s*=\s*false\s*$') {
+    $txtL = $txtL -replace '(?m)^(\s*ignore_disable_switch\s*=\s*)false(\s*)$', '${1}true${2}'
+    Set-Content -LiteralPath $iniL -Value $txtL -NoNewline -Encoding ASCII
+    Write-Host "    [ok]   ignore_disable_switch = true"
+  } elseif ($txtL -notmatch '(?m)^\s*ignore_disable_switch\s*=') {
+    $txtL = $txtL.TrimEnd() + [Environment]::NewLine + 'ignore_disable_switch = true' + [Environment]::NewLine
+    Set-Content -LiteralPath $iniL -Value $txtL -NoNewline -Encoding ASCII
+    Write-Host "    [ok]   ignore_disable_switch added"
+  } else {
+    Write-Host "    [ok]   ignore_disable_switch already set"
+  }
+} else {
+  Write-Host "    !! doorstop_config.ini not found in layout" -ForegroundColor Red
+  exit 1
+}
 
 Write-Host "    overlaying plugin ..."
 $plug = Join-Path $REL 'BepInEx\plugins'

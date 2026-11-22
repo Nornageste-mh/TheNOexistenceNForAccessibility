@@ -825,14 +825,39 @@ namespace NoExistenceA11y
         private bool _subscribed;
         private int _ticks;
 
+        /// <summary>
+        /// 启动诊断：直接写插件日志文件，不经过 BepInEx 日志管道，也不看 CfgDiag。
+        /// 2026-11-22 实机反馈「部署了没反应」时，日志只到 Chainloader startup complete，
+        /// 分不清是 Update 没跑，还是 BepInEx 的运行期日志没落盘 —— 先用这行把它们分开。
+        /// </summary>
+        internal static void BootLog(string s)
+        {
+            try
+            {
+                string path = Plugin.DiagPath;
+                if (string.IsNullOrEmpty(path)) return;
+                File.AppendAllText(path, "[boot] " + DateTime.Now.ToString("HH:mm:ss.fff") + " " + s + "\n");
+            }
+            catch { }
+        }
+
         public void Awake()
         {
             Instance = this;
+            BootLog("Awake，enabled=" + enabled + "，activeInHierarchy=" + gameObject.activeInHierarchy
+                + "，activeSelf=" + gameObject.activeSelf);
+        }
+
+        public void OnEnable()
+        {
+            BootLog("OnEnable");
         }
 
         public void Update()
         {
             _ticks++;
+            if (_ticks == 1) BootLog("Update 第一帧");
+            else if (_ticks % 600 == 0) BootLog("Update 存活 tick=" + _ticks);
 
             // 界面操作：菜单一出现就自动接管（uGUI 提交通路只在接管期间关，退出即还原）。
             if (Plugin.CfgUiNav == null || Plugin.CfgUiNav.Value)
@@ -867,8 +892,13 @@ namespace NoExistenceA11y
                     Speech.Init(Plugin.L);
                     Plugin.L.LogInfo("[a11y] 语音后端: " + Speech.BackendName);
                     Plugin.Diag("speech backend = " + Speech.BackendName);
+                    BootLog("Speech.Init OK，backend=" + Speech.BackendName);
                 }
-                catch (Exception e) { Plugin.L.LogError("[a11y] Speech.Init: " + e.Message); }
+                catch (Exception e)
+                {
+                    Plugin.L.LogError("[a11y] Speech.Init: " + e.Message);
+                    BootLog("Speech.Init 失败: " + e.GetType().Name + " " + e.Message);
+                }
             }
 
             if (!_subscribed)
@@ -887,6 +917,7 @@ namespace NoExistenceA11y
                     _subscribed = true;
                     Plugin.L.LogInfo("[a11y] SUBSCRIBED to OnPrintTextStarted");
                     Plugin.Diag("subscribed to OnPrintTextStarted");
+                    BootLog("已订阅 OnPrintTextStarted，tick=" + _ticks);
                     _subscribedAt = _ticks;
                 }
                 catch (Exception e)

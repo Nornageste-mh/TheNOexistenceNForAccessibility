@@ -58,6 +58,31 @@ if (-not $NoBackup -and (Test-Path $dstDll) -and $dstHashBefore -ne $srcHashEarl
   Write-Host ("    [backup] " + $bak)
 }
 
+# --- make Doorstop immune to a polluted Steam session -----------------
+# Why: a doorstop-injected game process writes DOORSTOP_DISABLE=TRUE into its
+# own environment, child processes inherit it, and if Steam is (re)started from
+# that chain the whole Steam session carries it; from then on every game Steam
+# launches skips injection. Setting ignore_disable_switch = true in this game's
+# doorstop_config.ini makes the install load BepInEx even in a polluted session
+# (same defense the aliya_a11y patch uses, verified on this machine).
+$ini = Join-Path $GameDir 'doorstop_config.ini'
+if (Test-Path $ini) {
+  $txt = Get-Content -LiteralPath $ini -Raw
+  if ($txt -match '(?m)^\s*ignore_disable_switch\s*=\s*false\s*$') {
+    $txt = $txt -replace '(?m)^(\s*ignore_disable_switch\s*=\s*)false(\s*)$', '${1}true${2}'
+    Set-Content -LiteralPath $ini -Value $txt -NoNewline -Encoding ASCII
+    Write-Host '    [doorstop] ignore_disable_switch -> true'
+  } elseif ($txt -notmatch '(?m)^\s*ignore_disable_switch\s*=') {
+    $txt = $txt.TrimEnd() + [Environment]::NewLine + 'ignore_disable_switch = true' + [Environment]::NewLine
+    Set-Content -LiteralPath $ini -Value $txt -NoNewline -Encoding ASCII
+    Write-Host '    [doorstop] ignore_disable_switch added'
+  } else {
+    Write-Host '    [doorstop] ignore_disable_switch already set'
+  }
+} else {
+  Write-Host '    [warn] doorstop_config.ini not found in game folder' -ForegroundColor Yellow
+}
+
 # --- copy plugin files (never remove anything) -----------------------
 $files = @('NoExistenceA11y.dll', 'nvdaControllerClient.dll', 'ZDSRAPI_x64.dll', 'ZDSRAPI.dll')
 foreach ($f in $files) {
