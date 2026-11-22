@@ -1,4 +1,4 @@
-# =====================================================================
+﻿# =====================================================================
 #  Assemble the release zip for v0.2.1.0 Preview EXP1
 #
 #  发布包 = BepInEx 6.0.0-be.788 官方包
@@ -12,6 +12,8 @@
 #  ASCII only on purpose: a .ps1 with non-ASCII text and no BOM is read
 #  as GBK by Windows PowerShell and fails to parse.
 # =====================================================================
+param([switch]$NoDeploy)
+
 $ErrorActionPreference = 'Stop'
 $MOD  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SRC  = Join-Path $MOD 'src\NoExistenceA11y'
@@ -171,4 +173,13 @@ Write-Host ("    " + [Math]::Round((Get-Item $zip).Length / 1MB, 1) + " MB, " + 
 if ($bad -gt 0) {
   Write-Host ("    !! " + $bad + " entries use backslash separators") -ForegroundColor Red
   exit 1
+}
+Write-Host ""
+Write-Host "=== 5. deploy to game ==="
+if ($NoDeploy) {
+  Write-Host "    [skip]   -NoDeploy"
+} else {
+  $deploy = Join-Path $MOD 'deploy.ps1'
+  if (Test-Path $deploy) { & $deploy -LayoutDir $REL }
+  else { Write-Host "    [warn] deploy.ps1 not found" -ForegroundColor Yellow }
 }
